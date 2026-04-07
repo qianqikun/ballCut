@@ -10,12 +10,7 @@
 cd /Users/qianqikun/Documents/myCode/ballCut
 python3 -m venv venv
 source venv/bin/activate      # bash/zsh
-# source venv/bin/activate.fish  # fish shell
 pip install -r requirements.txt
-
-
-#source venv/bin/activate.fish
-#python3 app.py
 ```
 
 ### 2. 启动应用
@@ -23,6 +18,11 @@ pip install -r requirements.txt
 ```bash
 source venv/bin/activate       # 激活虚拟环境
 python app.py                  # 启动 Web 服务
+```
+
+```fish
+source venv/bin/activate.fish
+python app.py
 ```
 
 ### 3. 打开浏览器
