@@ -18,8 +18,14 @@
         </div>
         <a href="/api/download/{{ video_id }}/{{ info.filename }}"
            class="btn btn-primary btn-block">
-            ⬇ 下载集锦
+            ⬇ 下载合并集锦
         </a>
+        {% if info.folder %}
+        <a href="/api/download_folder/{{ video_id }}/{{ info.folder }}"
+           class="btn btn-outline btn-block" style="margin-top: 0.5rem;">
+            📂 下载所有独立素材 (ZIP)
+        </a>
+        {% endif %}
     </section>
     {% endfor %}
 </div>

@@ -169,9 +169,29 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
                 progress_callback(clips_done / total_clips)
 
         if clip_paths:
-            # Sanitize player name for filename
-            safe_name = "".join(c for c in player if c.isalnum() or c in ('_', '-', ' '))
+            # Sanitize player name for folder/filename (allow alphanumeric including Chinese)
+            safe_name = "".join(c for c in player if (c.isalnum() or c in ('_', '-', ' ')))
             safe_name = safe_name.strip() or 'unknown'
+            
+            # Create a directory for individual clips
+            player_dir = os.path.join(output_dir, safe_name)
+            os.makedirs(player_dir, exist_ok=True)
+
+            # Move/Copy clips to player directory with descriptive names
+            final_clip_paths = []
+            import shutil
+            for i, cp in enumerate(clip_paths):
+                # Format: Player_01_00-12-30.mp4
+                time_str = p_scores[i]['timestamp_str'].replace(':', '-')
+                shot_filename = f"{safe_name}_{i+1:03d}_{time_str}.mp4"
+                shot_path = os.path.join(player_dir, shot_filename)
+                
+                try:
+                    shutil.copy2(cp, shot_path)
+                    final_clip_paths.append(shot_path)
+                except Exception as e:
+                    logger.error(f"Failed to save individual shot {shot_filename}: {e}")
+
             output_filename = f"highlight_{safe_name}.mp4"
             output_path = os.path.join(output_dir, output_filename)
 
@@ -180,12 +200,13 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
                 results[player] = {
                     'path': output_path,
                     'filename': output_filename,
-                    'count': len(clip_paths)
+                    'count': len(clip_paths),
+                    'folder': safe_name
                 }
             except Exception as e:
                 logger.error(f"Failed to concat clips for {player}: {e}")
 
-            # Cleanup temp clips
+            # Cleanup temp clips (we already copied them to player_dir)
             for cp in clip_paths:
                 if os.path.exists(cp):
                     os.remove(cp)

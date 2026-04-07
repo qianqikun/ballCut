@@ -9,7 +9,7 @@ import json
 import threading
 import logging
 from flask import (Flask, render_template, request, jsonify,
-                   send_from_directory, redirect, url_for)
+                   send_from_directory, redirect, url_for, send_file)
 
 from config import (SECRET_KEY, MAX_CONTENT_LENGTH, THUMBNAIL_DIR, UPLOAD_DIR,
                     OUTPUT_DIR, SESSION_DIR, TEMP_DIR, FRAME_SKIP,
@@ -42,6 +42,7 @@ def load_session(video_id):
 
 
 def save_session(video_id, data):
+    os.makedirs(SESSION_DIR, exist_ok=True)
     path = get_session_path(video_id)
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -312,5 +313,27 @@ def api_download(video_id, filename):
     return send_from_directory(output_dir, filename, as_attachment=True)
 
 
+@app.route('/api/download_folder/<video_id>/<folder>')
+def api_download_folder(video_id, folder):
+    """Download a player's shot folder as a ZIP."""
+    player_dir = os.path.join(OUTPUT_DIR, video_id, folder)
+    if not os.path.exists(player_dir):
+        return "Folder not found", 404
+        
+    temp_zip = f"{player_dir}.zip"
+    import shutil
+    # Create zip from the folder
+    shutil.make_archive(player_dir, 'zip', player_dir)
+    
+    return send_file(temp_zip, as_attachment=True, download_name=f"{folder}_shots.zip")
+
+
 if __name__ == '__main__':
+    # Ensure directories exist
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    os.makedirs(THUMBNAIL_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    
     app.run(host='0.0.0.0', port=8080, debug=True)
