@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Application generated data
+data/
+*.mp4
+*.jpg
+
+# macOS specific
+.DS_Store
+
+# Temporary repositories
+temp_repo/

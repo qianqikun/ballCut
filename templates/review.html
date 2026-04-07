@@ -1,0 +1,448 @@
+{% extends "base.html" %}
+{% block title %}审核进球{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>审核进球</h1>
+    <p class="subtitle">
+        共检测到 <strong id="totalCount">{{ session.scores|length }}</strong> 个进球，
+        请确认并标注球员姓名
+    </p>
+</div>
+
+{% if session.scores|length == 0 %}
+<section class="card empty-state">
+    <div class="empty-icon">🔍</div>
+    <h2>未检测到进球</h2>
+    <p>请尝试调高灵敏度或重新标记篮筐区域</p>
+    <a href="/" class="btn btn-primary">重新开始</a>
+</section>
+{% else %}
+
+<!-- Batch player assignment -->
+<section class="card">
+    <div class="toolbar">
+        <div class="toolbar-left">
+            <button class="btn btn-sm btn-outline" onclick="selectAll(true)">全选</button>
+            <button class="btn btn-sm btn-outline" onclick="selectAll(false)">全不选</button>
+        </div>
+        <div class="toolbar-right">
+            <input type="text" id="batchPlayer" class="input-text input-sm"
+                   placeholder="批量设置球员名">
+            <button class="btn btn-sm btn-secondary" onclick="batchSetPlayer()">
+                应用到选中
+            </button>
+        </div>
+    </div>
+</section>
+
+<!-- Score grid -->
+<div class="score-grid" id="scoreGrid">
+    {% for score in session.scores %}
+    <div class="score-card {% if not score.confirmed %}score-rejected{% endif %}"
+         data-id="{{ score.id }}" id="score-{{ score.id }}">
+        <div class="score-thumb-wrapper">
+            <img src="/api/thumbnail/{{ video_id }}/{{ score.thumbnail }}"
+                 class="score-thumb" alt="进球 {{ score.id + 1 }}" loading="lazy">
+            <span class="score-time-badge">{{ score.timestamp_str }}</span>
+            <div class="score-play-overlay" onclick="playSnippet({{ score.id }})" title="查看回放与剪辑">
+                <div class="play-icon">▶</div>
+            </div>
+            <div class="score-select-overlay" onclick="toggleSelect({{ score.id }})">
+                <div class="checkbox-indicator">
+                    <span class="check-mark">✓</span>
+                </div>
+            </div>
+        </div>
+        <div class="score-info">
+            <div class="score-header">
+                <span class="score-number">#{{ score.id + 1 }}</span>
+                <label class="toggle-switch">
+                    <input type="checkbox" {{ 'checked' if score.confirmed }}
+                           onchange="toggleConfirm({{ score.id }}, this.checked)">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <input type="text" class="input-text input-player"
+                   placeholder="球员姓名"
+                   value="{{ score.player }}"
+                   data-score-id="{{ score.id }}"
+                   onchange="setPlayer({{ score.id }}, this.value)">
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Actions -->
+<section class="card actions-card">
+    <div class="actions-row">
+        <div class="action-info">
+            <span id="confirmedCount">{{ session.scores|selectattr('confirmed')|list|length }}</span>
+            个已确认进球
+        </div>
+        <div class="action-buttons">
+            <a href="/" class="btn btn-outline">重新开始</a>
+            <button class="btn btn-primary btn-lg" onclick="generateHighlights()">
+                🎬 生成集锦
+            </button>
+        </div>
+    </div>
+</section>
+
+<!-- Generating modal -->
+<div class="modal-overlay hidden" id="genModal">
+    <div class="modal-content">
+        <h2>正在生成集锦</h2>
+        <p id="genText">正在剪辑视频片段...</p>
+        <div class="progress-bar-wrapper">
+            <div class="progress-bar">
+                <div class="progress-fill" id="genProgressFill" style="width: 0%"></div>
+            </div>
+            <span class="progress-pct" id="genProgressPct">0%</span>
+        </div>
+    </div>
+</div>
+
+<!-- Video playback modal -->
+<div class="modal-overlay hidden" id="videoModal" style="z-index: 300;" onclick="if(event.target===this) closeVideoModal()">
+    <div class="modal-content" style="max-width: 800px; padding: 1rem; position: relative;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h2 style="margin: 0; font-size: 1.2rem;">回放与剪辑微调</h2>
+            <button class="btn btn-outline btn-sm" onclick="closeVideoModal()">✕</button>
+        </div>
+        <video id="snippetPlayer" controls style="width: 100%; max-height: 60vh; border-radius: 8px; background: #000;" playsinline></video>
+        
+        <div style="margin-top: 15px; padding: 15px 20px; background: rgba(0,0,0,0.3); border-radius: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
+                <span style="font-size: 0.9em; color: var(--text-secondary);">进球前起始点: <strong id="modalBeforeVal" style="color:var(--accent)">4.0</strong>s</span>
+                <span style="font-size: 0.9em; color: var(--text-secondary);">进球后结束点: <strong id="modalAfterVal" style="color:var(--accent)">2.0</strong>s</span>
+            </div>
+            
+            <div class="trim-control">
+                <div class="trim-track"></div>
+                <div class="trim-selection" id="trimSelection"></div>
+                
+                <!-- min controls start time (-8 to +4) -->
+                <input type="range" id="trimMin" class="trim-input" min="-8" max="4" step="0.5" value="-4">
+                <!-- max controls end time (-8 to +4) -->
+                <input type="range" id="trimMax" class="trim-input" min="-8" max="4" step="0.5" value="2">
+                
+                <!-- Zero point indicator -->
+                <div class="trim-zero-marker" title="进球瞬间"></div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 25px;">
+                <button class="btn btn-sm btn-primary" onclick="replaySnippet()">重新播放截取段</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<style>
+.score-play-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0);
+    transition: all 0.2s;
+}
+.score-thumb-wrapper:hover .score-play-overlay {
+    background: rgba(0, 0, 0, 0.3);
+}
+.play-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: rgba(59, 130, 246, 0.8);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    padding-left: 4px; /* visually center the triangle */
+    opacity: 0;
+    transform: scale(0.8);
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+.score-thumb-wrapper:hover .play-icon {
+    opacity: 1;
+    transform: scale(1);
+}
+
+/* Video trimmer styles */
+.trim-control {
+    position: relative;
+    height: 36px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 6px;
+    margin: 0;
+}
+.trim-track {
+    position: absolute;
+    top: 0; bottom: 0; left: 0; right: 0;
+    border-radius: 6px;
+    overflow: hidden;
+    background: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255,255,255,0.05) 10px, rgba(255,255,255,0.05) 20px);
+}
+.trim-selection {
+    position: absolute;
+    top: 0; bottom: 0;
+    background: rgba(59, 130, 246, 0.4);
+    border: 2px solid #3b82f6;
+    border-left: 12px solid #3b82f6;
+    border-right: 12px solid #3b82f6;
+    border-radius: 6px;
+    pointer-events: none;
+    box-shadow: 0 0 10px rgba(59,130,246,0.3);
+}
+.trim-input {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    margin: 0;
+    -webkit-appearance: none;
+    appearance: none;
+    background: none;
+    pointer-events: none;
+}
+.trim-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    pointer-events: auto;
+    width: 24px;
+    height: 36px;
+    background: transparent;
+    cursor: ew-resize;
+}
+.trim-zero-marker {
+    position: absolute; 
+    left: 66.66%; /* 8/12 */
+    top: -5px; bottom: -5px; 
+    width: 2px; 
+    background: var(--accent); 
+    z-index: 1;
+    pointer-events: none;
+}
+</style>
+
+<script>
+const VIDEO_ID = '{{ video_id }}';
+let scores = {{ session.scores | tojson }};
+let selectedIds = new Set();
+let stopSnippetTime = 0;
+let currentPlayId = null;
+
+function playSnippet(id) {
+    const score = scores.find(s => s.id === id);
+    if (!score) return;
+    
+    currentPlayId = id;
+    let clipBefore = 4;
+    let clipAfter = 2;
+    if (score.clip_before !== undefined) clipBefore = score.clip_before;
+    if (score.clip_after !== undefined) clipAfter = score.clip_after;
+    
+    document.getElementById('trimMin').value = -clipBefore;
+    document.getElementById('trimMax').value = clipAfter;
+    updateTrimUI();
+    
+    replaySnippet();
+    document.getElementById('videoModal').classList.remove('hidden');
+}
+
+function replaySnippet() {
+    if (currentPlayId === null) return;
+    const score = scores.find(s => s.id === currentPlayId);
+    if (!score) return;
+    
+    const clipBefore = score.clip_before || 4;
+    const clipAfter = score.clip_after || 2;
+    
+    const start = Math.max(0, score.timestamp - clipBefore);
+    const end = score.timestamp + clipAfter;
+    stopSnippetTime = end;
+    
+    const player = document.getElementById('snippetPlayer');
+    // Force reload by removing and re-setting src
+    player.src = `/api/video/${VIDEO_ID}#t=${start},${end}`;
+    player.play();
+    
+    player.ontimeupdate = function() {
+        if (player.currentTime >= stopSnippetTime) {
+            player.pause();
+        }
+    };
+}
+
+function updateTrimUI() {
+    let minInput = document.getElementById('trimMin');
+    let maxInput = document.getElementById('trimMax');
+    
+    let minVal = parseFloat(minInput.value);
+    let maxVal = parseFloat(maxInput.value);
+    
+    // Prevent crossing
+    if (minVal > maxVal - 0.5) {
+        minVal = maxVal - 0.5;
+        minInput.value = minVal;
+    }
+    
+    // Calculate UI percentages (range is -8 to 4, total 12)
+    const leftPct = ((minVal + 8) / 12) * 100;
+    const rightPct = ((maxVal + 8) / 12) * 100;
+    const widthPct = rightPct - leftPct;
+    
+    const sel = document.getElementById('trimSelection');
+    sel.style.left = leftPct + '%';
+    sel.style.width = widthPct + '%';
+    
+    const cb = -minVal;
+    const ca = maxVal;
+    
+    document.getElementById('modalBeforeVal').innerText = cb.toFixed(1);
+    document.getElementById('modalAfterVal').innerText = ca.toFixed(1);
+    
+    if (currentPlayId !== null) {
+        const score = scores.find(s => s.id === currentPlayId);
+        if (score) {
+            score.clip_before = cb;
+            score.clip_after = ca;
+            saveScores();
+        }
+    }
+}
+
+// Bind events
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('trimMin').addEventListener('input', updateTrimUI);
+    document.getElementById('trimMax').addEventListener('input', updateTrimUI);
+});
+
+function closeVideoModal() {
+    document.getElementById('videoModal').classList.add('hidden');
+    const player = document.getElementById('snippetPlayer');
+    player.pause();
+    player.removeAttribute('src'); // free memory
+    currentPlayId = null;
+}
+
+function toggleSelect(id) {
+    const card = document.getElementById(`score-${id}`);
+    if (selectedIds.has(id)) {
+        selectedIds.delete(id);
+        card.classList.remove('score-selected');
+    } else {
+        selectedIds.add(id);
+        card.classList.add('score-selected');
+    }
+}
+
+function selectAll(checked) {
+    scores.forEach(s => {
+        const card = document.getElementById(`score-${s.id}`);
+        if (checked) {
+            selectedIds.add(s.id);
+            card.classList.add('score-selected');
+        } else {
+            selectedIds.delete(s.id);
+            card.classList.remove('score-selected');
+        }
+    });
+}
+
+function batchSetPlayer() {
+    const name = document.getElementById('batchPlayer').value.trim();
+    if (!name) return;
+    selectedIds.forEach(id => {
+        const score = scores.find(s => s.id === id);
+        if (score) score.player = name;
+        const input = document.querySelector(`input[data-score-id="${id}"]`);
+        if (input) input.value = name;
+    });
+    saveScores();
+}
+
+function setPlayer(id, name) {
+    const score = scores.find(s => s.id === id);
+    if (score) score.player = name;
+    saveScores();
+}
+
+function toggleConfirm(id, confirmed) {
+    const score = scores.find(s => s.id === id);
+    if (score) score.confirmed = confirmed;
+    const card = document.getElementById(`score-${id}`);
+    card.classList.toggle('score-rejected', !confirmed);
+    updateCounts();
+    saveScores();
+}
+
+function updateCounts() {
+    const confirmed = scores.filter(s => s.confirmed).length;
+    document.getElementById('confirmedCount').textContent = confirmed;
+}
+
+function saveScores() {
+    fetch('/api/update-scores', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({video_id: VIDEO_ID, scores: scores})
+    });
+}
+
+function generateHighlights() {
+    const confirmed = scores.filter(s => s.confirmed);
+    if (confirmed.length === 0) {
+        alert('请至少确认一个进球');
+        return;
+    }
+
+    // Save first
+    saveScores();
+
+    document.getElementById('genModal').classList.remove('hidden');
+
+    fetch('/api/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            video_id: VIDEO_ID
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) throw new Error(data.error);
+        pollGenProgress();
+    })
+    .catch(e => {
+        document.getElementById('genText').textContent = '生成失败: ' + e.message;
+    });
+}
+
+function pollGenProgress() {
+    fetch(`/api/status/${VIDEO_ID}`)
+    .then(r => r.json())
+    .then(data => {
+        const pct = Math.round(data.progress * 100);
+        document.getElementById('genProgressFill').style.width = pct + '%';
+        document.getElementById('genProgressPct').textContent = pct + '%';
+
+        if (data.status === 'done') {
+            window.location.href = `/highlights/${VIDEO_ID}`;
+        } else if (data.status === 'error') {
+            document.getElementById('genText').textContent =
+                '生成失败: ' + (data.error || '未知错误');
+        } else {
+            setTimeout(pollGenProgress, 1000);
+        }
+    })
+    .catch(() => setTimeout(pollGenProgress, 2000));
+}
+</script>
+{% endblock %}

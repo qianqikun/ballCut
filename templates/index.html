@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}上传视频{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>开始使用</h1>
+    <p class="subtitle">上传篮球比赛视频，自动检测进球并生成个人集锦</p>
+</div>
+
+<!-- Step 1: Video Path -->
+<section class="card step-card" id="step1">
+    <div class="step-badge">1</div>
+    <h2>选择视频</h2>
+    <p class="step-desc">选择本地视频文件进行上传（视频较大时请耐心等待）</p>
+
+    <div class="input-group">
+        <input type="file" id="videoFile" class="input-text" accept="video/mp4,video/x-m4v,video/*">
+        <button class="btn btn-primary" id="btnLoadVideo" onclick="uploadVideo()">
+            上传视频
+        </button>
+    </div>
+    <div class="error-msg" id="step1Error"></div>
+</section>
+
+<!-- Step 2: Mark Hoop Region -->
+<section class="card step-card hidden" id="step2">
+    <div class="step-badge">2</div>
+    <h2>标记篮筐区域</h2>
+    <p class="step-desc">在画面上拖拽鼠标，框选篮筐和球网的位置</p>
+
+    <div class="canvas-wrapper" id="canvasWrapper">
+        <canvas id="frameCanvas"></canvas>
+        <div class="canvas-hint" id="canvasHint">拖拽鼠标框选篮筐区域</div>
+    </div>
+
+    <div class="controls-row">
+        <div class="control-group">
+            <label for="sensitivity">检测灵敏度</label>
+            <div class="slider-group">
+                <span class="slider-label">少</span>
+                <input type="range" id="sensitivity" min="10" max="90" value="50" class="slider">
+                <span class="slider-label">多</span>
+            </div>
+        </div>
+        <button class="btn btn-primary" id="btnStartDetect" onclick="startDetection()" disabled>
+            开始检测
+        </button>
+    </div>
+    <div class="region-info" id="regionInfo"></div>
+</section>
+
+<!-- Step 3: Processing -->
+<section class="card step-card hidden" id="step3">
+    <div class="step-badge">3</div>
+    <h2>正在分析视频</h2>
+    <p class="step-desc" id="progressText">正在检测进球...</p>
+
+    <div class="progress-bar-wrapper">
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+        <span class="progress-pct" id="progressPct">0%</span>
+    </div>
+
+    <div class="processing-animation">
+        <div class="bounce-ball"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Page-specific state
+    let videoId = null;
+    let frameWidth = 0;
+    let frameHeight = 0;
+    let hoopRegion = null;
+
+    // Canvas drawing state
+    let isDrawing = false;
+    let startX, startY, endX, endY;
+
+    function uploadVideo() {
+        const fileInput = document.getElementById('videoFile');
+        if (!fileInput.files || fileInput.files.length === 0) {
+            showError('step1Error', '请选择视频文件');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const btn = document.getElementById('btnLoadVideo');
+        btn.disabled = true;
+        btn.textContent = '上传中...请稍候';
+        clearError('step1Error');
+
+        const formData = new FormData();
+        formData.append('video', file);
+
+        fetch('/api/upload-video', {
+            method: 'POST',
+            body: formData
+        })
+        .then(r => r.json().then(data => ({ok: r.ok, data})))
+        .then(({ok, data}) => {
+            if (!ok) throw new Error(data.error);
+            videoId = data.video_id;
+            frameWidth = data.width;
+            frameHeight = data.height;
+            setupCanvas();
+            document.getElementById('step2').classList.remove('hidden');
+            document.getElementById('step2').scrollIntoView({behavior: 'smooth'});
+        })
+        .catch(e => showError('step1Error', e.message))
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '上传视频';
+        });
+    }
+
+    function setupCanvas() {
+        const canvas = document.getElementById('frameCanvas');
+        const wrapper = document.getElementById('canvasWrapper');
+        const ctx = canvas.getContext('2d');
+
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+            // Scale to fit wrapper (max 960px wide)
+            const maxW = Math.min(960, wrapper.clientWidth - 20);
+            const scale = maxW / img.width;
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            canvas.dataset.scaleX = frameWidth / canvas.width;
+            canvas.dataset.scaleY = frameHeight / canvas.height;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.dataset.imgData = canvas.toDataURL();
+
+            // Enable drawing
+            canvas.addEventListener('mousedown', onCanvasMouseDown);
+            canvas.addEventListener('mousemove', onCanvasMouseMove);
+            canvas.addEventListener('mouseup', onCanvasMouseUp);
+            canvas.addEventListener('mouseleave', onCanvasMouseUp);
+
+            // Touch support
+            canvas.addEventListener('touchstart', onCanvasTouchStart, {passive: false});
+            canvas.addEventListener('touchmove', onCanvasTouchMove, {passive: false});
+            canvas.addEventListener('touchend', onCanvasTouchEnd);
+        };
+        img.src = `/api/first-frame/${videoId}`;
+    }
+
+    function getCanvasPos(canvas, e) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+        };
+    }
+
+    function onCanvasMouseDown(e) {
+        const pos = getCanvasPos(e.target, e);
+        startX = pos.x; startY = pos.y;
+        isDrawing = true;
+        document.getElementById('canvasHint').classList.add('hidden');
+    }
+
+    function onCanvasMouseMove(e) {
+        if (!isDrawing) return;
+        const canvas = e.target;
+        const ctx = canvas.getContext('2d');
+        const pos = getCanvasPos(canvas, e);
+        endX = pos.x; endY = pos.y;
+        redrawCanvas(canvas, ctx);
+    }
+
+    function onCanvasMouseUp(e) {
+        if (!isDrawing) return;
+        isDrawing = false;
+        finalizeRegion();
+    }
+
+    function onCanvasTouchStart(e) {
+        e.preventDefault();
+        const touch = e.touches[0];
+        const canvas = e.target;
+        const pos = getCanvasPos(canvas, touch);
+        startX = pos.x; startY = pos.y;
+        isDrawing = true;
+        document.getElementById('canvasHint').classList.add('hidden');
+    }
+
+    function onCanvasTouchMove(e) {
+        e.preventDefault();
+        if (!isDrawing) return;
+        const touch = e.touches[0];
+        const canvas = document.getElementById('frameCanvas');
+        const ctx = canvas.getContext('2d');
+        const pos = getCanvasPos(canvas, touch);
+        endX = pos.x; endY = pos.y;
+        redrawCanvas(canvas, ctx);
+    }
+
+    function onCanvasTouchEnd(e) {
+        if (!isDrawing) return;
+        isDrawing = false;
+        finalizeRegion();
+    }
+
+    function redrawCanvas(canvas, ctx) {
+        const img = new Image();
+        img.src = canvas.dataset.imgData;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        // Draw selection rectangle
+        const x = Math.min(startX, endX);
+        const y = Math.min(startY, endY);
+        const w = Math.abs(endX - startX);
+        const h = Math.abs(endY - startY);
+
+        ctx.strokeStyle = '#00ff88';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(x, y, w, h);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(0, 255, 136, 0.15)';
+        ctx.fillRect(x, y, w, h);
+    }
+
+    function finalizeRegion() {
+        const canvas = document.getElementById('frameCanvas');
+        const scaleX = parseFloat(canvas.dataset.scaleX);
+        const scaleY = parseFloat(canvas.dataset.scaleY);
+
+        const x1 = Math.round(Math.min(startX, endX) * scaleX);
+        const y1 = Math.round(Math.min(startY, endY) * scaleY);
+        const x2 = Math.round(Math.max(startX, endX) * scaleX);
+        const y2 = Math.round(Math.max(startY, endY) * scaleY);
+
+        if (x2 - x1 < 20 || y2 - y1 < 20) {
+            document.getElementById('regionInfo').textContent = '区域太小，请重新框选';
+            document.getElementById('btnStartDetect').disabled = true;
+            return;
+        }
+
+        hoopRegion = [x1, y1, x2, y2];
+        document.getElementById('regionInfo').textContent =
+            `已选区域: (${x1}, ${y1}) → (${x2}, ${y2})`;
+        document.getElementById('btnStartDetect').disabled = false;
+    }
+
+    function startDetection() {
+        if (!hoopRegion || !videoId) return;
+
+        const sensitivity = parseInt(document.getElementById('sensitivity').value);
+
+        document.getElementById('step3').classList.remove('hidden');
+        document.getElementById('step3').scrollIntoView({behavior: 'smooth'});
+        document.getElementById('btnStartDetect').disabled = true;
+
+        fetch('/api/detect', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                video_id: videoId,
+                hoop_region: hoopRegion,
+                sensitivity: sensitivity
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            pollProgress();
+        })
+        .catch(e => {
+            document.getElementById('progressText').textContent = '检测失败: ' + e.message;
+        });
+    }
+
+    function pollProgress() {
+        fetch(`/api/status/${videoId}`)
+        .then(r => r.json())
+        .then(data => {
+            const pct = Math.round(data.progress * 100);
+            document.getElementById('progressFill').style.width = pct + '%';
+            document.getElementById('progressPct').textContent = pct + '%';
+
+            if (data.status === 'done') {
+                window.location.href = `/review/${videoId}`;
+            } else if (data.status === 'error') {
+                document.getElementById('progressText').textContent =
+                    '检测失败: ' + (data.error || '未知错误');
+            } else {
+                setTimeout(pollProgress, 1000);
+            }
+        })
+        .catch(() => setTimeout(pollProgress, 2000));
+    }
+</script>
+{% endblock %}

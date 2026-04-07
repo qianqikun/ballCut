@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}集锦下载{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>🎬 集锦已生成</h1>
+    <p class="subtitle">按球员分组的进球集锦已就绪</p>
+</div>
+
+{% if session.highlights %}
+<div class="highlight-grid">
+    {% for player, info in session.highlights.items() %}
+    <section class="card highlight-card">
+        <div class="highlight-icon">🏀</div>
+        <h2 class="highlight-player">{{ player }}</h2>
+        <div class="highlight-stats">
+            <span class="stat-badge">{{ info.count }} 个进球</span>
+        </div>
+        <a href="/api/download/{{ video_id }}/{{ info.filename }}"
+           class="btn btn-primary btn-block">
+            ⬇ 下载集锦
+        </a>
+    </section>
+    {% endfor %}
+</div>
+{% else %}
+<section class="card empty-state">
+    <div class="empty-icon">⚠️</div>
+    <h2>未生成集锦</h2>
+    <p>可能是所有进球剪辑都失败了</p>
+</section>
+{% endif %}
+
+<section class="card" style="text-align: center; margin-top: 2rem;">
+    <a href="/" class="btn btn-outline">处理新视频</a>
+    <a href="/review/{{ video_id }}" class="btn btn-outline" style="margin-left: 1rem;">
+        返回审核
+    </a>
+</section>
+{% endblock %}
