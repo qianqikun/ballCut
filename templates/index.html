@@ -42,6 +42,14 @@
                 <span class="slider-label">多</span>
             </div>
         </div>
+        <div class="control-group">
+            <label class="checkbox-container">
+                <input type="checkbox" id="debugMode">
+                生成调试视频 (Debug Mode)
+                <br>
+                <small class="hint-text">开启后可查看AI识别过程，但处理变慢</small>
+            </label>
+        </div>
         <button class="btn btn-primary" id="btnStartDetect" onclick="startDetection()" disabled>
             开始检测
         </button>
@@ -263,7 +271,8 @@
             body: JSON.stringify({
                 video_id: videoId,
                 hoop_region: hoopRegion,
-                sensitivity: sensitivity
+                sensitivity: sensitivity,
+                debug_mode: document.getElementById('debugMode').checked
             })
         })
         .then(r => r.json())

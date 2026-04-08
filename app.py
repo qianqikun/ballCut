@@ -141,12 +141,15 @@ def api_detect():
     video_id = data.get('video_id')
     hoop_region = data.get('hoop_region')  # [x1, y1, x2, y2]
     sensitivity = data.get('sensitivity', 50)
+    debug_mode = data.get('debug_mode', False)
 
     session = load_session(video_id)
     if not session:
         return jsonify({'error': '会话不存在'}), 404
 
     session['hoop_region'] = hoop_region
+    session['sensitivity'] = sensitivity
+    session['debug_enabled'] = debug_mode
     save_session(video_id, session)
 
     # Init task tracking
@@ -155,7 +158,7 @@ def api_detect():
     # Run detection in background
     thread = threading.Thread(
         target=_run_detection,
-        args=(video_id, session['video_path'], hoop_region, sensitivity),
+        args=(video_id, session['video_path'], hoop_region, sensitivity, debug_mode),
         daemon=True
     )
     thread.start()
@@ -163,7 +166,7 @@ def api_detect():
     return jsonify({'status': 'started'})
 
 
-def _run_detection(video_id, video_path, hoop_region, sensitivity):
+def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode):
     """Background detection task."""
     try:
         def progress_cb(p):
@@ -176,7 +179,8 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity):
             min_interval=MIN_SCORE_INTERVAL,
             sensitivity=sensitivity
         )
-        scores = detector.detect(video_path, video_id, thumb_dir, progress_cb)
+        # Enable debug video to help troubleshoot missed shots if requested
+        scores = detector.detect(video_path, video_id, thumb_dir, progress_callback=progress_cb, debug_video=debug_mode)
 
         session = load_session(video_id)
         session['scores'] = scores

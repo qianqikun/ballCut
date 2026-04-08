@@ -127,11 +127,12 @@ class ScoreDetector:
         self.hoop_region = tuple(int(v) for v in hoop_region)
         self.frame_skip = max(1, frame_skip)
         self.min_interval = min_interval
+        self.sensitivity = int(sensitivity)
         
         # We will load the model lazily in detect to avoid blocking app startup
         self.model = None
 
-    def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None):
+    def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None, debug_video=False):
         """
         Process video and detect scoring events.
         """
@@ -141,7 +142,9 @@ class ScoreDetector:
         # Load best.pt from models dir
         model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'models', 'best.pt')
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model not found at {model_path}. Please place best.pt in the models directory.")
+            # Fallback to yolov8n.pt if best.pt is missing
+            model_path = 'yolov8n.pt'
+            logger.warning(f"best.pt not found, using {model_path}")
             
         if self.model is None:
             self.model = YOLO(model_path)
@@ -165,8 +168,27 @@ class ScoreDetector:
         h_cy = hy1 + h_h / 2
         hoop_rect = (h_cx, h_cy, h_w, h_h)
         
-        logger.info(f"YOLO Processing video: {video_path} on {device}. Frame skip: {self.frame_skip}")
+        # Adjust frame skip based on sensitivity (1-100)
+        # Low (0-40) -> skip 3-4, High (80-100) -> skip 1
+        adj_skip = self.frame_skip
+        if self.sensitivity >= 80:
+            adj_skip = 1
+        elif self.sensitivity >= 50:
+            adj_skip = 2
         
+        # Confidence threshold based on sensitivity
+        conf_thresh = 0.4 if self.sensitivity < 30 else (0.25 if self.sensitivity < 70 else 0.15)
+        
+        logger.info(f"YOLO Processing video: {video_path} on {device}. Frame skip: {adj_skip}, Sensitivity: {self.sensitivity}")
+        
+        # Setup Debug Video Writer
+        video_writer = None
+        if debug_video:
+            debug_path = os.path.join(os.path.dirname(thumbnail_dir), f"debug_{video_id}.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(debug_path, fourcc, fps / adj_skip, (width, height))
+            logger.info(f"Debug video enabled, saving to: {debug_path}")
+
         ball_pos = []
         scores_metadata = []
         
@@ -186,9 +208,17 @@ class ScoreDetector:
             if not ret:
                 break
                 
-            if frame_idx % self.frame_skip == 0:
+            if frame_idx % adj_skip == 0:
                 results = self.model(frame, stream=True, device=device, verbose=False)
                 
+                debug_frame = None
+                if debug_video:
+                    debug_frame = frame.copy()
+                    # Draw hoop region
+                    cv2.rectangle(debug_frame, (int(hx1), int(hy1)), (int(hx2), int(hy2)), (255, 255, 0), 2)
+                    cv2.putText(debug_frame, "HOOP", (int(hx1), int(hy1)-10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
                 # Check for objects in the frame
                 for r in results:
                     boxes = r.boxes
@@ -201,11 +231,19 @@ class ScoreDetector:
                         
                         center = (int(x1 + w / 2), int(y1 + h / 2))
                         
-                        # Assuming cls 0 is Basketball
-                        if cls == 0:
-                            if conf > .3 or (in_hoop_region(center, hoop_rect) and conf > 0.15):
+                        # Basketball detection (COCO class 32 for sports ball)
+                        target_cls = 0 if 'best.pt' in model_path else 32
+                        if cls == target_cls:
+                            # Use adaptive threshold inside the hoop region
+                            if conf > conf_thresh or (in_hoop_region(center, hoop_rect) and conf > (conf_thresh * 0.6)):
                                 ball_pos.append((center, frame_idx, w, h, conf))
-                
+                        
+                        if debug_video:
+                            color = (0, 255, 0) if cls == target_cls else (0, 0, 255)
+                            cv2.rectangle(debug_frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                            cv2.putText(debug_frame, f"{conf:.2f}", (int(x1), int(y1)-5),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+
                 # Clean up tracks
                 ball_pos = clean_ball_pos(ball_pos, frame_idx)
                 
@@ -222,9 +260,6 @@ class ScoreDetector:
                             
                     # Trigger condition: passing up then down
                     if up and down and up_frame < down_frame:
-                        up = False
-                        down = False
-                        
                         timestamp = frame_idx / fps
                         
                         # Throttle detections
@@ -232,7 +267,11 @@ class ScoreDetector:
                             if check_score(ball_pos, hoop_rect):
                                 last_score_time = timestamp
                                 score_count += 1
-                                
+                                logger.info(f"SCORE DETECTED at {timestamp:.2f}s")
+                                if debug_video:
+                                    cv2.putText(debug_frame, "!!! SCORE !!!", (width // 2 - 100, height // 2),
+                                               cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+
                                 # Draw target indicator for thumbnail
                                 thumb = frame.copy()
                                 cv2.rectangle(thumb, (int(hx1), int(hy1)), (int(hx2), int(hy2)), (0, 255, 0), 2)
@@ -253,12 +292,21 @@ class ScoreDetector:
                                     'player': '',
                                     'confirmed': True
                                 })
-            
+                        
+                        # Reset for next detection after a trigger attempt
+                        up = False
+                        down = False
+                
+                if video_writer:
+                    video_writer.write(debug_frame)
+
             frame_idx += 1
             if progress_callback and frame_idx % 30 == 0:
                 progress_callback(frame_idx / total_frames)
                 
         cap.release()
+        if video_writer:
+            video_writer.release()
         logger.info(f"Found {len(scores_metadata)} scoring events using YOLO.")
         return scores_metadata
         

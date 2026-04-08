@@ -18,3 +18,5 @@ data/
 
 # Temporary repositories
 temp_repo/
+
+.agent
