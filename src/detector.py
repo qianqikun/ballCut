@@ -324,7 +324,13 @@ class ScoreDetector:
                                     'motion_score': round(float(ball_pos[-1][4]), 2),  # Use confidence as score
                                     'thumbnail': thumb_filename,
                                     'player': '',
-                                    'confirmed': True
+                                    'confirmed': True,
+                                    'yolo_bbox': [
+                                        round(ball_pos[-1][0][0] / width, 6),
+                                        round(ball_pos[-1][0][1] / height, 6),
+                                        round(ball_pos[-1][2] / width, 6),
+                                        round(ball_pos[-1][3] / height, 6)
+                                    ]
                                 })
                                 
                                 # Notify caller of new score
