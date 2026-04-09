@@ -290,9 +290,14 @@ class ScoreDetector:
                         if down:
                             down_frame = ball_pos[-1][1]
                             
+                    # Security Timeout: If stuck in 'up' state for too long (> 1.5s), reset to prevent engine lock-up
+                    max_trigger_gap = int(fps * 1.5)
+                    if up and (frame_idx - up_frame) > max_trigger_gap:
+                        up = False
+                        down = False
+                        logger.debug(f"Detection state reset at frame {frame_idx} due to timeout.")
+                            
                     # Trigger condition: passing up then down
-                    # Also check frame interval: up->down should be within 90 frames (~3.0s at 30fps)
-                    max_trigger_gap = int(fps * 3.0)
                     if up and down and up_frame < down_frame and (down_frame - up_frame) < max_trigger_gap:
                         timestamp = frame_idx / fps
                         
