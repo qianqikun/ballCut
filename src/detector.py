@@ -184,18 +184,17 @@ class ScoreDetector:
         h_cy = hy1 + h_h / 2
         hoop_rect = (h_cx, h_cy, h_w, h_h)
         
-        # Adjust frame skip based on sensitivity (1-100)
-        # Low (0-40) -> skip 3-4, High (80-100) -> skip 1
-        adj_skip = self.frame_skip
-        if self.sensitivity >= 80:
-            adj_skip = 1
-        elif self.sensitivity >= 50:
-            adj_skip = 2
+        # Analysis frame rate is now fixed to video frame rate (1.0x) as requested.
+        adj_skip = 1
         
-        # Confidence threshold based on sensitivity
-        conf_thresh = 0.4 if self.sensitivity < 30 else (0.25 if self.sensitivity < 70 else 0.15)
+        # Sensitivity (0-100) now directly maps to Model Confidence Threshold.
+        # Higher sensitivity -> Lower threshold (more inclusive).
+        # Range: Sensitivity 100 => 0.05 conf, Sensitivity 0 => 0.50 conf.
+        conf_thresh = 0.5 - (self.sensitivity / 100.0) * 0.45
+        # Ensure it stays within reasonable bounds
+        conf_thresh = max(0.05, min(0.5, conf_thresh))
         
-        logger.info(f"YOLO Processing video: {video_path} on {device}. Frame skip: {adj_skip}, Sensitivity: {self.sensitivity}")
+        logger.info(f"YOLO Processing video: {video_path} on {device}. Frame skip: {adj_skip} (Full FPS), Sensitivity: {self.sensitivity} (Conf: {conf_thresh:.3f})")
         
         # Setup Debug Video Writer
         video_writer = None
