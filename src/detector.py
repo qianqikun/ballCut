@@ -43,9 +43,8 @@ def clean_ball_pos(ball_pos, current_frame):
             ball_pos.pop()
 
     # Remove points older than 30 frames
-    if len(ball_pos) > 0:
-        if current_frame - ball_pos[0][1] > 30:
-            ball_pos.pop(0)
+    while len(ball_pos) > 0 and current_frame - ball_pos[0][1] > 30:
+        ball_pos.pop(0)
 
     return ball_pos
 
@@ -66,8 +65,8 @@ def check_score(ball_pos, hoop_rect):
                 y.append(ball_pos[j][0][1])
             break
             
-    # Require at least 3 points for reliable trajectory prediction
-    if len(x) < 3:
+    # Require at least 2 points for reliable trajectory prediction
+    if len(x) < 2:
         return False
         
     try:
@@ -86,8 +85,9 @@ def check_score(ball_pos, hoop_rect):
         
     if rim_x1 < predicted_x < rim_x2:
         return True
-    # Rebound zone scaled to hoop width (5% of hoop width on each side)
-    hoop_rebound_zone = 0.05 * h_w
+    
+    # Rebound zone scaled to hoop width (15% of hoop width on each side)
+    hoop_rebound_zone = 0.15 * h_w
     if rim_x1 - hoop_rebound_zone < predicted_x < rim_x2 + hoop_rebound_zone:
         return True
             
@@ -292,8 +292,8 @@ class ScoreDetector:
                             down_frame = ball_pos[-1][1]
                             
                     # Trigger condition: passing up then down
-                    # Also check frame interval: up->down should be within 45 frames (~1.5s at 30fps)
-                    max_trigger_gap = int(fps * 1.5)
+                    # Also check frame interval: up->down should be within 90 frames (~3.0s at 30fps)
+                    max_trigger_gap = int(fps * 3.0)
                     if up and down and up_frame < down_frame and (down_frame - up_frame) < max_trigger_gap:
                         timestamp = frame_idx / fps
                         
