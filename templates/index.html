@@ -70,7 +70,14 @@
         <span class="progress-pct" id="progressPct">0%</span>
     </div>
 
-    <div class="processing-animation">
+    <div class="detection-status-row">
+        <span class="score-counter" id="scoreCounter">已发现 <strong>0</strong> 个进球</span>
+        <button class="btn btn-warning" id="btnPause" onclick="pauseDetection()">
+            ⏸ 暂停检测
+        </button>
+    </div>
+
+    <div class="processing-animation" id="processingAnim">
         <div class="bounce-ball"></div>
     </div>
 </section>
@@ -87,6 +94,34 @@
     // Canvas drawing state
     let isDrawing = false;
     let startX, startY, endX, endY;
+    let isPausing = false;
+
+    // Check for resume parameter on page load
+    (function checkResume() {
+        const params = new URLSearchParams(window.location.search);
+        const resumeId = params.get('resume');
+        if (resumeId) {
+            videoId = resumeId;
+            // Show step 3 directly
+            document.getElementById('step3').classList.remove('hidden');
+            document.getElementById('progressText').textContent = '正在恢复检测...';
+            
+            // Call resume API
+            fetch(`/api/resume/${resumeId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) throw new Error(data.error);
+                document.getElementById('progressText').textContent = '检测继续中...';
+                pollProgress();
+            })
+            .catch(e => {
+                document.getElementById('progressText').textContent = '恢复失败: ' + e.message;
+            });
+        }
+    })();
 
     function uploadVideo() {
         const fileInput = document.getElementById('videoFile');
@@ -292,17 +327,55 @@
             const pct = Math.round(data.progress * 100);
             document.getElementById('progressFill').style.width = pct + '%';
             document.getElementById('progressPct').textContent = pct + '%';
+            
+            // Update score counter
+            if (data.score_count !== undefined) {
+                document.getElementById('scoreCounter').innerHTML = 
+                    '已发现 <strong>' + data.score_count + '</strong> 个进球';
+            }
 
-            if (data.status === 'done') {
+            if (data.status === 'paused') {
+                // Detection paused, redirect to review page
+                window.location.href = `/review/${videoId}`;
+            } else if (data.status === 'done') {
                 window.location.href = `/review/${videoId}`;
             } else if (data.status === 'error') {
                 document.getElementById('progressText').textContent =
                     '检测失败: ' + (data.error || '未知错误');
+                document.getElementById('btnPause').disabled = true;
             } else {
                 setTimeout(pollProgress, 1000);
             }
         })
         .catch(() => setTimeout(pollProgress, 2000));
+    }
+
+    function pauseDetection() {
+        if (isPausing || !videoId) return;
+        isPausing = true;
+        
+        const btn = document.getElementById('btnPause');
+        btn.disabled = true;
+        btn.textContent = '⏸ 暂停中...';
+        document.getElementById('progressText').textContent = '正在暂停，请稍候...';
+        
+        fetch(`/api/pause/${videoId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            // pollProgress will handle the redirect when status becomes 'paused'
+        })
+        .catch(e => {
+            isPausing = false;
+            btn.disabled = false;
+            btn.textContent = '⏸ 暂停检测';
+            document.getElementById('progressText').textContent = '暂停失败: ' + e.message;
+        });
     }
 </script>
 {% endblock %}

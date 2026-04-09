@@ -26,7 +26,7 @@ app.config['SECRET_KEY'] = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # In-memory task tracking
-tasks = {}  # video_id -> {progress, status, error}
+tasks = {}  # video_id -> {progress, status, error, paused, resume_event, paused_frame, score_count}
 
 
 def get_session_path(video_id):
@@ -153,7 +153,17 @@ def api_detect():
     save_session(video_id, session)
 
     # Init task tracking
-    tasks[video_id] = {'progress': 0.0, 'status': 'processing', 'error': None}
+    resume_event = threading.Event()
+    resume_event.set()  # Not paused initially
+    tasks[video_id] = {
+        'progress': 0.0,
+        'status': 'processing',
+        'error': None,
+        'paused': False,
+        'resume_event': resume_event,
+        'paused_frame': 0,
+        'score_count': 0
+    }
 
     # Run detection in background
     thread = threading.Thread(
@@ -166,11 +176,72 @@ def api_detect():
     return jsonify({'status': 'started'})
 
 
-def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode):
+@app.route('/api/pause/<video_id>', methods=['POST'])
+def api_pause(video_id):
+    """Pause an ongoing detection."""
+    task = tasks.get(video_id)
+    if not task or task['status'] != 'processing':
+        return jsonify({'error': '没有正在进行的检测任务'}), 400
+    
+    task['paused'] = True
+    logger.info(f"Pause requested for {video_id}")
+    return jsonify({'status': 'pausing'})
+
+
+@app.route('/api/resume/<video_id>', methods=['POST'])
+def api_resume(video_id):
+    """Resume a paused detection from where it left off."""
+    task = tasks.get(video_id)
+    if not task or task['status'] != 'paused':
+        return jsonify({'error': '没有已暂停的检测任务'}), 400
+    
+    session = load_session(video_id)
+    if not session:
+        return jsonify({'error': '会话不存在'}), 404
+    
+    hoop_region = session.get('hoop_region')
+    sensitivity = session.get('sensitivity', 50)
+    debug_mode = session.get('debug_enabled', False)
+    
+    # Reset task state for resuming
+    start_frame = task.get('paused_frame', 0)
+    existing_scores = session.get('scores', [])
+    
+    task['status'] = 'processing'
+    task['paused'] = False
+    task['error'] = None
+    
+    # Run detection in background, resuming from paused_frame
+    thread = threading.Thread(
+        target=_run_detection,
+        args=(video_id, session['video_path'], hoop_region, sensitivity, debug_mode,
+              start_frame, existing_scores),
+        daemon=True
+    )
+    thread.start()
+    
+    return jsonify({'status': 'resumed', 'start_frame': start_frame})
+
+
+def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
+                   start_frame=0, existing_scores=None):
     """Background detection task."""
     try:
         def progress_cb(p):
             tasks[video_id]['progress'] = round(p, 3)
+
+        def pause_check():
+            """Returns True if detection should pause."""
+            return tasks.get(video_id, {}).get('paused', False)
+
+        def score_cb(scores):
+            """Called each time a new score is detected."""
+            tasks[video_id]['score_count'] = len(scores)
+            # Save interim results to session
+            session = load_session(video_id)
+            if session:
+                session['scores'] = scores
+                save_session(video_id, session)
 
         thumb_dir = os.path.join(THUMBNAIL_DIR, video_id)
         detector = ScoreDetector(
@@ -180,7 +251,30 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode):
             sensitivity=sensitivity
         )
         # Enable debug video to help troubleshoot missed shots if requested
-        scores = detector.detect(video_path, video_id, thumb_dir, progress_callback=progress_cb, debug_video=debug_mode)
+        result = detector.detect(
+            video_path, video_id, thumb_dir,
+            progress_callback=progress_cb,
+            debug_video=debug_mode,
+            pause_check=pause_check,
+            score_callback=score_cb,
+            start_frame=start_frame,
+            existing_scores=existing_scores
+        )
+        
+        scores, last_frame = result
+
+        # Check if we were paused (detection returned early)
+        if tasks.get(video_id, {}).get('paused', False):
+            session = load_session(video_id)
+            session['scores'] = scores
+            session['status'] = 'paused'
+            save_session(video_id, session)
+            
+            tasks[video_id]['status'] = 'paused'
+            tasks[video_id]['paused_frame'] = last_frame
+            tasks[video_id]['score_count'] = len(scores)
+            logger.info(f"Detection paused for {video_id} at frame {last_frame}: {len(scores)} events so far")
+            return
 
         session = load_session(video_id)
         session['scores'] = scores
@@ -189,6 +283,7 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode):
 
         tasks[video_id]['status'] = 'done'
         tasks[video_id]['progress'] = 1.0
+        tasks[video_id]['score_count'] = len(scores)
         logger.info(f"Detection complete for {video_id}: {len(scores)} events")
 
     except Exception as e:
@@ -200,7 +295,13 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode):
 @app.route('/api/status/<video_id>')
 def api_status(video_id):
     task = tasks.get(video_id, {'progress': 0, 'status': 'unknown', 'error': None})
-    return jsonify(task)
+    return jsonify({
+        'progress': task.get('progress', 0),
+        'status': task.get('status', 'unknown'),
+        'error': task.get('error'),
+        'paused': task.get('paused', False),
+        'score_count': task.get('score_count', 0)
+    })
 
 
 @app.route('/api/scores/<video_id>')

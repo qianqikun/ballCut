@@ -10,6 +10,24 @@
     </p>
 </div>
 
+{% if session.status == 'paused' %}
+<section class="card paused-banner">
+    <div class="paused-banner-content">
+        <div class="paused-info">
+            <span class="paused-icon">⏸️</span>
+            <div>
+                <strong>检测已暂停</strong>
+                <p>可在此审核已识别的进球，删除误检的片段，完成后点击继续检测
+                </p>
+            </div>
+        </div>
+        <button class="btn btn-primary btn-lg btn-pulse" onclick="resumeDetection()">
+            ▶️ 继续检测
+        </button>
+    </div>
+</section>
+{% endif %}
+
 {% if session.scores|length == 0 %}
 <section class="card empty-state">
     <div class="empty-icon">🔍</div>
@@ -88,6 +106,20 @@
         </div>
     </div>
 </section>
+
+{% if session.status == 'paused' %}
+<section class="card paused-banner paused-banner-bottom">
+    <div class="paused-banner-content">
+        <div class="paused-info">
+            <span class="paused-icon">⏸️</span>
+            <strong>审核完成？</strong>
+        </div>
+        <button class="btn btn-primary btn-lg btn-pulse" onclick="resumeDetection()">
+            ▶️ 继续检测
+        </button>
+    </div>
+</section>
+{% endif %}
 
 <!-- Generating modal -->
 <div class="modal-overlay hidden" id="genModal">
@@ -234,6 +266,7 @@
 <script>
 const VIDEO_ID = '{{ video_id }}';
 let scores = {{ session.scores | tojson }};
+const SESSION_STATUS = '{{ session.status }}';
 let selectedIds = new Set();
 let stopSnippetTime = 0;
 let currentPlayId = null;
@@ -443,6 +476,14 @@ function pollGenProgress() {
         }
     })
     .catch(() => setTimeout(pollGenProgress, 2000));
+}
+
+function resumeDetection() {
+    // Save current scores first, then redirect to index with resume param
+    saveScores();
+    setTimeout(() => {
+        window.location.href = `/?resume=${VIDEO_ID}`;
+    }, 300);
 }
 </script>
 {% endblock %}

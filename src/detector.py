@@ -57,31 +57,39 @@ def check_score(ball_pos, hoop_rect):
     x = []
     y = []
     
+    # Collect trajectory points near the rim
     for i in reversed(range(len(ball_pos))):
         if ball_pos[i][0][1] < rim_height:
-            x.append(ball_pos[i][0][0])
-            y.append(ball_pos[i][0][1])
-            if i + 1 < len(ball_pos):
-                x.append(ball_pos[i + 1][0][0])
-                y.append(ball_pos[i + 1][0][1])
+            # Gather this point and up to 2 subsequent points
+            for j in range(i, min(i + 3, len(ball_pos))):
+                x.append(ball_pos[j][0][0])
+                y.append(ball_pos[j][0][1])
             break
             
-    if len(x) > 1:
+    # Require at least 3 points for reliable trajectory prediction
+    if len(x) < 3:
+        return False
+        
+    try:
         m, b = np.polyfit(x, y, 1)
-        # Avoid division by zero if line is perfectly horizontal
-        if m == 0:
-            return False
+    except (np.linalg.LinAlgError, ValueError):
+        return False
+        
+    # Avoid division by zero if line is perfectly horizontal
+    if m == 0:
+        return False
             
-        predicted_x = (rim_height - b) / m
+    predicted_x = (rim_height - b) / m
         
-        rim_x1 = h_cx - 0.4 * h_w
-        rim_x2 = h_cx + 0.4 * h_w
+    rim_x1 = h_cx - 0.4 * h_w
+    rim_x2 = h_cx + 0.4 * h_w
         
-        if rim_x1 < predicted_x < rim_x2:
-            return True
-        hoop_rebound_zone = 10
-        if rim_x1 - hoop_rebound_zone < predicted_x < rim_x2 + hoop_rebound_zone:
-            return True
+    if rim_x1 < predicted_x < rim_x2:
+        return True
+    # Rebound zone scaled to hoop width (5% of hoop width on each side)
+    hoop_rebound_zone = 0.05 * h_w
+    if rim_x1 - hoop_rebound_zone < predicted_x < rim_x2 + hoop_rebound_zone:
+        return True
             
     return False
 
@@ -132,9 +140,17 @@ class ScoreDetector:
         # We will load the model lazily in detect to avoid blocking app startup
         self.model = None
 
-    def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None, debug_video=False):
+    def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None, debug_video=False,
+               pause_check=None, score_callback=None, start_frame=0, existing_scores=None):
         """
         Process video and detect scoring events.
+        
+        Args:
+            pause_check: callable() -> bool, returns True if should pause. When True,
+                         blocks until it returns False.
+            score_callback: callable(scores_metadata) called each time a score is detected.
+            start_frame: frame index to start/resume detection from.
+            existing_scores: list of pre-existing score dicts when resuming.
         """
         logger.info("Initializing YOLOv8 model instance.")
         device = get_device()
@@ -190,20 +206,37 @@ class ScoreDetector:
             logger.info(f"Debug video enabled, saving to: {debug_path}")
 
         ball_pos = []
-        scores_metadata = []
+        scores_metadata = list(existing_scores) if existing_scores else []
         
         up = False
         down = False
         up_frame = 0
         down_frame = 0
-        last_score_time = -self.min_interval
+        
+        # If resuming, set last_score_time from existing scores
+        if scores_metadata:
+            last_score_time = max(s['timestamp'] for s in scores_metadata)
+            score_count = len(scores_metadata)
+        else:
+            last_score_time = -self.min_interval
+            score_count = 0
         
         frame_idx = 0
-        score_count = 0
         
         os.makedirs(thumbnail_dir, exist_ok=True)
         
+        # If resuming, skip to start_frame
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            frame_idx = start_frame
+            logger.info(f"Resuming detection from frame {start_frame}")
+        
         while cap.isOpened():
+            # Check for pause
+            if pause_check and pause_check():
+                logger.info(f"Detection paused at frame {frame_idx}")
+                return scores_metadata, frame_idx  # Return current results and position
+            
             ret, frame = cap.read()
             if not ret:
                 break
@@ -259,7 +292,9 @@ class ScoreDetector:
                             down_frame = ball_pos[-1][1]
                             
                     # Trigger condition: passing up then down
-                    if up and down and up_frame < down_frame:
+                    # Also check frame interval: up->down should be within 45 frames (~1.5s at 30fps)
+                    max_trigger_gap = int(fps * 1.5)
+                    if up and down and up_frame < down_frame and (down_frame - up_frame) < max_trigger_gap:
                         timestamp = frame_idx / fps
                         
                         # Throttle detections
@@ -292,6 +327,10 @@ class ScoreDetector:
                                     'player': '',
                                     'confirmed': True
                                 })
+                                
+                                # Notify caller of new score
+                                if score_callback:
+                                    score_callback(scores_metadata)
                         
                         # Reset for next detection after a trigger attempt
                         up = False
@@ -308,7 +347,7 @@ class ScoreDetector:
         if video_writer:
             video_writer.release()
         logger.info(f"Found {len(scores_metadata)} scoring events using YOLO.")
-        return scores_metadata
+        return scores_metadata, frame_idx  # Always return tuple (scores, last_frame)
         
     @staticmethod
     def _format_time(seconds):

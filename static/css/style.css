@@ -714,6 +714,117 @@ body {
     display: none !important;
 }
 
+/* ── Detection Status Row ── */
+.detection-status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 1.25rem;
+    padding: 0.75rem 1rem;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: var(--radius-sm);
+}
+
+.score-counter {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+.score-counter strong {
+    color: var(--accent);
+    font-size: 1.1rem;
+}
+
+/* ── Warning Button ── */
+.btn-warning {
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    color: white;
+    box-shadow: 0 2px 12px rgba(245, 158, 11, 0.3);
+}
+
+.btn-warning:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
+}
+
+/* ── Paused Banner ── */
+.paused-banner {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(139, 92, 246, 0.12));
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    padding: 1.25rem 1.75rem;
+}
+
+.paused-banner-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+.paused-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.paused-icon {
+    font-size: 2rem;
+}
+
+.paused-info strong {
+    display: block;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    margin-bottom: 0.2rem;
+}
+
+.paused-info p {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin: 0;
+}
+
+.paused-banner-bottom {
+    position: sticky;
+    bottom: 1rem;
+    z-index: 10;
+    backdrop-filter: blur(12px);
+}
+
+/* ── Pulse Animation for Continue Button ── */
+.btn-pulse {
+    animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+    0%, 100% {
+        box-shadow: 0 2px 12px var(--accent-glow);
+    }
+    50% {
+        box-shadow: 0 4px 30px rgba(59, 130, 246, 0.5);
+    }
+}
+
+/* ── Checkbox Container ── */
+.checkbox-container {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.checkbox-container input[type="checkbox"] {
+    margin-top: 3px;
+}
+
+.hint-text {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+}
+
 /* ── Responsive ── */
 @media (max-width: 640px) {
     .container { padding: 1rem; }
