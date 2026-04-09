@@ -42,8 +42,8 @@ def clean_ball_pos(ball_pos, current_frame):
         elif (w2*1.8 < h2) or (h2*1.8 < w2):
             ball_pos.pop()
 
-    # Remove points older than 30 frames
-    while len(ball_pos) > 0 and current_frame - ball_pos[0][1] > 30:
+    # Remove points older than 90 frames (3 seconds at 30fps)
+    while len(ball_pos) > 0 and current_frame - ball_pos[0][1] > 90:
         ball_pos.pop(0)
 
     return ball_pos
@@ -56,29 +56,29 @@ def check_score(ball_pos, hoop_rect):
     x = []
     y = []
     
-    # Collect trajectory points near the rim
+    # Collect EXACTLY 2 trajectory points near the rim (one above, one below)
     for i in reversed(range(len(ball_pos))):
         if ball_pos[i][0][1] < rim_height:
-            # Gather this point and up to 2 subsequent points
-            for j in range(i, min(i + 3, len(ball_pos))):
-                x.append(ball_pos[j][0][0])
-                y.append(ball_pos[j][0][1])
+            x.append(ball_pos[i][0][0])
+            y.append(ball_pos[i][0][1])
+            if i + 1 < len(ball_pos):
+                x.append(ball_pos[i + 1][0][0])
+                y.append(ball_pos[i + 1][0][1])
             break
             
-    # Require at least 2 points for reliable trajectory prediction
+    # Require 2 points for linear interpolation
     if len(x) < 2:
         return False
         
-    try:
-        m, b = np.polyfit(x, y, 1)
-    except (np.linalg.LinAlgError, ValueError):
+    x1, y1 = x[0], y[0]
+    x2, y2 = x[1], y[1]
+    
+    # Avoid division by zero if ball is moving perfectly horizontally (impossible for a falling ball)
+    if y1 == y2:
         return False
         
-    # Avoid division by zero if line is perfectly horizontal
-    if m == 0:
-        return False
-            
-    predicted_x = (rim_height - b) / m
+    # Manually interpolate predicted X to avoid numpy polyfit conditioning issues for vertical paths
+    predicted_x = x1 + (rim_height - y1) * (x2 - x1) / (y2 - y1)
         
     rim_x1 = h_cx - 0.4 * h_w
     rim_x2 = h_cx + 0.4 * h_w
