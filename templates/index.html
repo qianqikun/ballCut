@@ -7,6 +7,17 @@
     <p class="subtitle">上传篮球比赛视频，自动检测进球并生成个人集锦</p>
 </div>
 
+<!-- History Records -->
+<section class="history-section hidden" id="historySection">
+    <div class="history-header">
+        <h2>历史记录</h2>
+        <span class="history-count" id="historyCount"></span>
+    </div>
+    <div class="history-grid" id="historyGrid">
+        <!-- History items will be injected here -->
+    </div>
+</section>
+
 <!-- Step 1: Video Path -->
 <section class="card step-card" id="step1">
     <div class="step-badge">1</div>
@@ -95,6 +106,69 @@
     let isDrawing = false;
     let startX, startY, endX, endY;
     let isPausing = false;
+
+    const STATUS_MAP = {
+        'ready': { text: '待处理', class: 'status-ready' },
+        'processing': { text: '正在检测', class: 'status-detected' },
+        'detected': { text: '已检测', class: 'status-detected' },
+        'paused': { text: '已暂停', class: 'status-paused' },
+        'complete': { text: '已完成', class: 'status-complete' },
+        'unknown': { text: '未知', class: 'status-ready' }
+    };
+
+    // Load history on startup
+    window.addEventListener('DOMContentLoaded', loadHistory);
+
+    function loadHistory() {
+        const historyGrid = document.getElementById('historyGrid');
+        const historySection = document.getElementById('historySection');
+        
+        fetch('/api/sessions')
+        .then(r => r.json())
+        .then(sessions => {
+            if (!sessions || sessions.length === 0) {
+                historySection.classList.add('hidden');
+                return;
+            }
+            
+            historySection.classList.remove('hidden');
+            document.getElementById('historyCount').textContent = `共 ${sessions.length} 条记录`;
+            
+            historyGrid.innerHTML = sessions.map(session => {
+                const status = STATUS_MAP[session.status] || STATUS_MAP['unknown'];
+                const date = new Date(session.mtime * 1000).toLocaleDateString('zh-CN', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                return `
+                <a href="/review/${session.video_id}" class="history-item">
+                    <div class="history-thumb-wrapper">
+                        <img src="/api/first-frame/${session.video_id}" class="history-thumb" alt="视频预览" onerror="this.src='/static/img/no-thumb.jpg'">
+                        <div class="history-status-badge ${status.class}">${status.text}</div>
+                    </div>
+                    <div class="history-info">
+                        <div class="history-filename" title="${session.filename}">${session.filename}</div>
+                        <div class="history-meta">
+                            <div class="history-date">
+                                📅 ${date}
+                            </div>
+                            <div class="history-scores">
+                                🏀 ${session.score_count} 个进球
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                `;
+            }).join('');
+        })
+        .catch(err => {
+            console.error('Failed to load history:', err);
+            historySection.classList.add('hidden');
+        });
+    }
 
     // Check for resume parameter on page load
     (function checkResume() {

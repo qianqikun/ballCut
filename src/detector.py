@@ -255,7 +255,7 @@ class ScoreDetector:
                 for r in results:
                     boxes = r.boxes
                     for box in boxes:
-                        x1, y1, x2, y2 = box.xyxy[0]
+                        x1, y1, x2, y2 = (float(v) for v in box.xyxy[0])
                         w = x2 - x1
                         h = y2 - y1
                         conf = float(box.conf[0])

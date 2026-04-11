@@ -69,10 +69,12 @@ def concat_videos(clip_paths, output_path, temp_dir):
 
     # Create concat list file
     concat_file = os.path.join(temp_dir, 'concat_list.txt')
-    with open(concat_file, 'w') as f:
+    with open(concat_file, 'w', encoding='utf-8') as f:
         for path in clip_paths:
             # Escape single quotes in path
             escaped = path.replace("'", "'\\''")
+            # Convert backslashes to forward slashes for Windows ffmpeg paths
+            escaped = escaped.replace('\\', '/')
             f.write(f"file '{escaped}'\n")
 
     cmd = [
@@ -155,7 +157,7 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             start = max(0, score['timestamp'] - cb)
             end = min(video_duration, score['timestamp'] + ca)
 
-            clip_filename = f"clip_{player}_{i:04d}.mp4"
+            clip_filename = f"clip_{clips_done:04d}.mp4"
             clip_path = os.path.join(temp_dir, clip_filename)
 
             try:

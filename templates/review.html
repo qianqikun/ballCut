@@ -422,40 +422,45 @@ function updateCounts() {
 }
 
 function saveScores() {
-    fetch('/api/update-scores', {
+    return fetch('/api/update-scores', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({video_id: VIDEO_ID, scores: scores})
     });
 }
 
-function generateHighlights() {
+async function generateHighlights() {
     const confirmed = scores.filter(s => s.confirmed);
     if (confirmed.length === 0) {
         alert('请至少确认一个进球');
         return;
     }
 
-    // Save first
-    saveScores();
-
     document.getElementById('genModal').classList.remove('hidden');
+    document.getElementById('genText').textContent = '正在保存标注信息...';
 
-    fetch('/api/generate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            video_id: VIDEO_ID
-        })
-    })
-    .then(r => r.json())
-    .then(data => {
+    try {
+        // Wait for save to complete before starting generation
+        await saveScores();
+        
+        document.getElementById('genText').textContent = '正在发起生成请求...';
+
+        const response = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                video_id: VIDEO_ID
+            })
+        });
+        
+        const data = await response.json();
         if (data.error) throw new Error(data.error);
+        
+        document.getElementById('genText').textContent = '正在等待任务排队...';
         pollGenProgress();
-    })
-    .catch(e => {
-        document.getElementById('genText').textContent = '生成失败: ' + e.message;
-    });
+    } catch (e) {
+        document.getElementById('genText').textContent = '操作失败: ' + e.message;
+    }
 }
 
 function pollGenProgress() {

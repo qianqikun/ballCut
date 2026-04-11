@@ -128,6 +128,48 @@ def api_upload_video():
 
 
 
+@app.route('/api/sessions')
+def api_sessions():
+    """List all saved sessions."""
+    if not os.path.exists(SESSION_DIR):
+        return jsonify([])
+        
+    sessions = []
+    for filename in os.listdir(SESSION_DIR):
+        if filename.endswith('.json'):
+            video_id = filename.replace('.json', '')
+            session_path = os.path.join(SESSION_DIR, filename)
+            
+            try:
+                # Use os.path.getmtime for sorting
+                mtime = os.path.getmtime(session_path)
+                
+                with open(session_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                # Extract relevant info
+                video_path = data.get('video_path', '')
+                orig_filename = os.path.basename(video_path)
+                # Remove the uuid prefix from filename if present
+                if '_' in orig_filename and len(orig_filename.split('_')[0]) == 12:
+                    orig_filename = '_'.join(orig_filename.split('_')[1:])
+                
+                sessions.append({
+                    'video_id': video_id,
+                    'filename': orig_filename,
+                    'status': data.get('status', 'unknown'),
+                    'score_count': len(data.get('scores', [])),
+                    'mtime': mtime,
+                    'timestamp': os.path.getctime(session_path) if hasattr(os.path, 'getctime') else mtime
+                })
+            except Exception as e:
+                logger.error(f"Error loading session {filename}: {e}")
+                
+    # Sort by mtime descending
+    sessions.sort(key=lambda x: x['mtime'], reverse=True)
+    return jsonify(sessions)
+
+
 @app.route('/api/first-frame/<video_id>')
 def api_first_frame(video_id):
     thumb_dir = os.path.join(THUMBNAIL_DIR, video_id)
@@ -234,13 +276,22 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
             """Returns True if detection should pause."""
             return tasks.get(video_id, {}).get('paused', False)
 
-        def score_cb(scores):
+        def score_cb(detector_scores):
             """Called each time a new score is detected."""
-            tasks[video_id]['score_count'] = len(scores)
+            tasks[video_id]['score_count'] = len(detector_scores)
             # Save interim results to session
             session = load_session(video_id)
             if session:
-                session['scores'] = scores
+                # Merge existing labels from session into the detector's score list
+                old_scores = session.get('scores', [])
+                old_map = {s['id']: s for s in old_scores}
+                for s in detector_scores:
+                    old = old_map.get(s['id'])
+                    if old:
+                        s['player'] = old.get('player', '')
+                        s['confirmed'] = old.get('confirmed', True)
+                
+                session['scores'] = detector_scores
                 save_session(video_id, session)
 
         thumb_dir = os.path.join(THUMBNAIL_DIR, video_id)
@@ -263,23 +314,32 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
         
         scores, last_frame = result
 
-        # Check if we were paused (detection returned early)
-        if tasks.get(video_id, {}).get('paused', False):
-            session = load_session(video_id)
-            session['scores'] = scores
-            session['status'] = 'paused'
-            save_session(video_id, session)
-            
-            tasks[video_id]['status'] = 'paused'
-            tasks[video_id]['paused_frame'] = last_frame
-            tasks[video_id]['score_count'] = len(scores)
-            logger.info(f"Detection paused for {video_id} at frame {last_frame}: {len(scores)} events so far")
-            return
-
+        # Final merge and save
         session = load_session(video_id)
-        session['scores'] = scores
-        session['status'] = 'detected'
-        save_session(video_id, session)
+        if session:
+            old_scores = session.get('scores', [])
+            old_map = {s['id']: s for s in old_scores}
+            for s in scores:
+                old = old_map.get(s['id'])
+                if old:
+                    s['player'] = old.get('player', '')
+                    s['confirmed'] = old.get('confirmed', True)
+            
+            session['scores'] = scores
+            
+            # Check if we were paused (detection returned early)
+            if tasks.get(video_id, {}).get('paused', False):
+                session['status'] = 'paused'
+                save_session(video_id, session)
+                
+                tasks[video_id]['status'] = 'paused'
+                tasks[video_id]['paused_frame'] = last_frame
+                tasks[video_id]['score_count'] = len(scores)
+                logger.info(f"Detection paused for {video_id} at frame {last_frame}: {len(scores)} events so far")
+                return
+
+            session['status'] = 'detected'
+            save_session(video_id, session)
 
         tasks[video_id]['status'] = 'done'
         tasks[video_id]['progress'] = 1.0
