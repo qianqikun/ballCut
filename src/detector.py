@@ -218,6 +218,10 @@ class ScoreDetector:
     CHECKPOINT_SECONDS = 5.0  # how often checkpoint_callback reports the position inside the video
     RESUME_REWIND_SECONDS = 2.0  # how far before the saved position a resumed run starts analysing
 
+    # Only this part of a range detection is analysed past its end, so that a shot that is still in
+    # progress at the end is not cut off; scores later than the requested end are not kept
+    RANGE_GRACE_SECONDS = 2.0
+
     def __init__(self, hoop_region, frame_skip=3, min_interval=5.0, sensitivity=50):
         self.hoop_region = tuple(int(v) for v in hoop_region)
         self.frame_skip = max(1, frame_skip)
@@ -228,7 +232,8 @@ class ScoreDetector:
 
     def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None, debug_video=False,
                pause_check=None, score_callback=None, start_frame=0, existing_scores=None,
-               checkpoint_callback=None, resume_pos_ms=None):
+               checkpoint_callback=None, resume_pos_ms=None, end_frame=None, end_pos_ms=None,
+               keep_between=None, thumbnail_prefix='score'):
         """
         Process video and detect scoring events.
 
@@ -242,6 +247,11 @@ class ScoreDetector:
                          that the caller can store where to continue after a restart.
             resume_pos_ms: timestamp (ms) of the frame before start_frame, as reported by an earlier
                          run. Used to land exactly on start_frame when resuming.
+            end_frame: last frame index to analyse; None means up to the end of the video.
+            end_pos_ms: stop once the video time (ms) of a frame is past this; None means no limit.
+            keep_between: (first, last) seconds. Only scores whose video time lies in this range are
+                         recorded; the others do not count. None means keep every score.
+            thumbnail_prefix: thumbnails are named "<prefix>_<number>.jpg".
         """
         device = get_device()
         with _model_lock:
@@ -316,12 +326,13 @@ class ScoreDetector:
             rewind = min(start_frame, round(fps * self.RESUME_REWIND_SECONDS))
             frame_idx = start_frame - rewind
             if resume_pos_ms and frame_idx > 0:
-                # Seeking is not frame-accurate: it can land a few frames after the requested one, and
-                # the error grows with the position in the video. So seek further back and read up to
-                # the wanted timestamp instead, which is exact.
-                back = 2 * fps + frame_idx // 100
-                cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx - back))
-                wanted_ms = resume_pos_ms - self.RESUME_REWIND_SECONDS * 1000
+                # Seeking by frame number is not accurate: it goes through the reported frame rate, which
+                # is only an average, and the error grows with the position in the video (dozens of frames
+                # late in a long one). Seeking by time is exact, so read up to the wanted timestamp.
+                wanted_ms = max(0.0, resume_pos_ms - self.RESUME_REWIND_SECONDS * 1000)
+                if not cap.set(cv2.CAP_PROP_POS_MSEC, wanted_ms):
+                    # Without time seeking, start well before and read up to the wanted timestamp
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx - (2 * fps + frame_idx // 100)))
                 while cap.read()[0] and cap.get(cv2.CAP_PROP_POS_MSEC) < wanted_ms:
                     pass
                 resync_ms = resume_pos_ms
@@ -340,7 +351,16 @@ class ScoreDetector:
             if not ret:
                 break
 
-            if resync_ms is not None and cap.get(cv2.CAP_PROP_POS_MSEC) >= resync_ms:
+            # Video time of this frame. It comes from the container's own timestamps: frame number
+            # divided by the reported frame rate drifts away from it, by seconds in a long video.
+            # 0 means the container gives no timestamps, in which case the frame-based time is used.
+            pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            if ((end_pos_ms is not None and pos_ms > end_pos_ms)
+                    or (end_frame is not None and frame_idx > end_frame)):
+                logger.info(f"Stopping detection at frame {frame_idx} ({pos_ms / 1000:.2f}s): end of the range")
+                break
+
+            if resync_ms is not None and pos_ms >= resync_ms:
                 # Back at the last frame analysed before the interruption: from the next frame on the
                 # frame numbers are exact again (the rewind distance in time is not a whole number of frames)
                 frame_idx = max(frame_idx, start_frame - 1)
@@ -365,11 +385,21 @@ class ScoreDetector:
                     if cls == target_cls and is_ball_candidate((cx, cy), conf, hoop_rect, conf_thresh):
                         candidates.append((cx, cy, x2 - x1, y2 - y1, conf))
 
+            throttle_before = tracker.last_score_time
             event = tracker.step(frame_idx, candidates)
+            if event is not None and keep_between is not None:
+                # Only the requested part of the video counts. A make just outside it is forgotten
+                # altogether, so that it does not hold back a make right inside with its interval.
+                time_ms = pos_ms if pos_ms > 0 else event['timestamp'] * 1000
+                last_ms = keep_between[1] * 1000 if keep_between[1] is not None else math.inf
+                if not (keep_between[0] * 1000 <= time_ms <= last_ms):
+                    tracker.last_score_time = throttle_before
+                    event = None
 
             if event:
+                # The container's time is the one players and the editor use; 0 means it has none
+                timestamp = pos_ms / 1000.0 if pos_ms > 0 else event['timestamp']
                 score_count += 1
-                timestamp = event['timestamp']
                 logger.info(f"SCORE DETECTED at {timestamp:.2f}s")
 
                 # Draw target indicator for thumbnail
@@ -378,7 +408,7 @@ class ScoreDetector:
                 for p in tracker.points:
                     cv2.circle(thumb, (int(p[1]), int(p[2])), 4, (0, 0, 255), -1)
 
-                thumb_filename = f"score_{score_count:04d}.jpg"
+                thumb_filename = f"{thumbnail_prefix}_{score_count:04d}.jpg"
                 thumb_path = os.path.join(thumbnail_dir, thumb_filename)
                 cv2.imwrite(thumb_path, thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
@@ -438,7 +468,7 @@ class ScoreDetector:
                 progress_callback(frame_idx / (total_frames or 1))
             # frame_idx is now the first frame that has not been analysed yet
             if checkpoint_callback and frame_idx % checkpoint_every == 0:
-                checkpoint_callback(frame_idx, cap.get(cv2.CAP_PROP_POS_MSEC))
+                checkpoint_callback(frame_idx, pos_ms)
 
         cap.release()
         if video_writer:

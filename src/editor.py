@@ -138,12 +138,6 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
     for player in player_scores:
         player_scores[player].sort(key=lambda s: s['timestamp'])
 
-    # Get video duration
-    import cv2
-    cap = cv2.VideoCapture(video_path)
-    video_duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
-
     total_clips = sum(len(v) for v in player_scores.values())
     clips_done = 0
     results = {}
@@ -156,7 +150,9 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             cb = score.get('clip_before', clip_before)
             ca = score.get('clip_after', clip_after)
             start = max(0, score['timestamp'] - cb)
-            end = min(video_duration, score['timestamp'] + ca)
+            # Not cut at the length reported for the video: it is an estimate, and past the real end
+            # ffmpeg simply stops
+            end = score['timestamp'] + ca
 
             clip_filename = f"clip_{clips_done:04d}.mp4"
             clip_path = os.path.join(temp_dir, clip_filename)
@@ -180,6 +176,15 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             # Create a directory for individual clips
             player_dir = os.path.join(output_dir, safe_name)
             os.makedirs(player_dir, exist_ok=True)
+
+            # The clips of an earlier generation: their numbering is not valid any more, and some of
+            # them may not belong to the shots of this generation (found later, or rejected since)
+            for old in os.listdir(player_dir):
+                if old.startswith(safe_name + '_') and old.endswith('.mp4'):
+                    try:
+                        os.remove(os.path.join(player_dir, old))
+                    except OSError as e:
+                        logger.warning(f"Could not remove old clip {old}: {e}")
 
             # Move/Copy clips to player directory with descriptive names
             final_clip_paths = []
@@ -214,5 +219,25 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             for cp in clip_paths:
                 if os.path.exists(cp):
                     os.remove(cp)
+
+    # What an earlier generation left for players that have no clips in this one (all rejected since,
+    # or renamed): their folders with the single clips, the ZIPs made from them, and their highlight videos
+    import shutil
+    kept_folders = {info['folder'] for info in results.values()}
+    kept_files = {info['filename'] for info in results.values()}
+    for name in os.listdir(output_dir):
+        path = os.path.join(output_dir, name)
+        stale = (name not in kept_folders) if os.path.isdir(path) else (
+            (name.endswith('.zip') and name[:-4] not in kept_folders)
+            or (name.startswith('highlight_') and name.endswith('.mp4') and name not in kept_files))
+        if not stale:
+            continue
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        except OSError as e:
+            logger.warning(f"Could not remove old output {name}: {e}")
 
     return results

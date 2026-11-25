@@ -32,6 +32,96 @@
 </section>
 {% endif %}
 
+<!-- Detect one part of the video again, with its own sensitivity and hoop -->
+<section class="card range-card" id="rangeCard">
+    <h2>重新检测片段</h2>
+    <p class="step-desc">
+        整段检测后仍有遗漏时，选一段时间重新检测。结果和已有的进球放在一起，按视频中的位置排序；
+        与已有进球相差不到 2 秒的不会重复添加。
+    </p>
+
+    <div class="range-form" id="rangeForm">
+        <div class="control-group">
+            <label for="rangeStart">开始时间</label>
+            <input type="text" id="rangeStart" class="input-text" placeholder="1:23:45 或 23:45" autocomplete="off">
+        </div>
+        <div class="control-group">
+            <label for="rangeEnd">结束时间</label>
+            <input type="text" id="rangeEnd" class="input-text" placeholder="留空 = 到视频结尾" autocomplete="off">
+        </div>
+        <div class="control-group range-sensitivity">
+            <label for="rangeSensitivity">检测灵敏度 <strong id="rangeSensitivityValue"></strong></label>
+            <div class="slider-group">
+                <span class="slider-label">少</span>
+                <input type="range" id="rangeSensitivity" min="10" max="90" value="{{ range_defaults.sensitivity }}" class="slider">
+                <span class="slider-label">多</span>
+            </div>
+            <small class="hint-text">越高越容易检出，误判也会变多</small>
+        </div>
+    </div>
+
+    <div class="range-hoop">
+        <div class="range-hoop-info">
+            <strong>篮筐区域</strong>
+            <span class="hint-text" id="rangeHoopInfo"></span>
+        </div>
+        <div class="range-hoop-buttons">
+            <button class="btn btn-sm btn-outline" id="btnPickHoop" onclick="openHoopPicker()">重新框选篮筐</button>
+            <button class="btn btn-sm btn-outline hidden" id="btnResetHoop" onclick="resetHoop()">恢复整段检测的框</button>
+        </div>
+    </div>
+
+    <div class="range-start-row">
+        <span class="hint-text" id="rangeDuration"></span>
+        <button class="btn btn-primary" id="btnDetectRange" onclick="startRangeDetection()">开始检测</button>
+    </div>
+    <div class="error-msg" id="rangeError"></div>
+
+    <!-- Shown instead of the form while a detection of a part is running -->
+    <div class="range-job hidden" id="rangeJob">
+        <p id="rangeJobSummary"></p>
+        <span class="hint-text" id="rangeJobHoop"></span>
+    </div>
+
+    <div class="range-progress hidden" id="rangeProgress">
+        <div class="progress-bar-wrapper">
+            <div class="progress-bar">
+                <div class="progress-fill" id="rangeProgressFill" style="width: 0%"></div>
+            </div>
+            <span class="progress-pct" id="rangeProgressPct">0%</span>
+        </div>
+        <p class="step-desc" id="rangeProgressText">正在检测...</p>
+        <button class="btn btn-sm btn-outline" id="btnPauseRange" onclick="pauseRangeDetection()">⏸ 暂停</button>
+    </div>
+
+    {% if runs_view %}
+    <div class="range-runs">
+        <strong>检测记录</strong>
+        <ul>
+            {% for r in runs_view %}
+            <li>第 {{ r.run }} 次：{{ r.range }}，灵敏度 {{ r.sensitivity }}{% if r.reselected %}，使用重新框选的篮筐{% endif %}{% if r.added is not none %}，新增 {{ r.added }} 个{% endif %}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+</section>
+
+<!-- Selecting the hoop again, on a frame of the video -->
+<div class="modal-overlay hidden" id="hoopModal" style="z-index: 300;">
+    <div class="modal-content hoop-modal">
+        <h2>框选篮筐区域</h2>
+        <p>在画面上拖拽，框选篮筐和球网的位置。画面取自 <strong id="hoopFrameTime"></strong>。</p>
+        <div class="canvas-wrapper" id="hoopCanvasWrapper">
+            <canvas id="hoopCanvas"></canvas>
+        </div>
+        <p class="hoop-modal-status" id="hoopPickInfo"></p>
+        <div class="hoop-modal-buttons">
+            <button class="btn btn-outline" onclick="closeHoopPicker()">取消</button>
+            <button class="btn btn-primary" id="btnUseHoop" onclick="usePickedHoop()">使用这个区域</button>
+        </div>
+    </div>
+</div>
+
 {% if session.scores|length == 0 %}
 <section class="card empty-state">
     <div class="empty-icon">🔍</div>
@@ -65,8 +155,17 @@
          data-id="{{ score.id }}" id="score-{{ score.id }}">
         <div class="score-thumb-wrapper">
             <img src="/api/thumbnail/{{ video_id }}/{{ score.thumbnail }}"
-                 class="score-thumb" alt="进球 {{ score.id + 1 }}" loading="lazy">
+                 class="score-thumb" alt="进球 {{ loop.index }}" loading="lazy">
             <span class="score-time-badge">{{ score.timestamp_str }}</span>
+            {% if score.run and score.run > 1 %}
+            <span class="score-run-badge" title="由第 {{ score.run }} 次检测发现，当时灵敏度 {{ score.sensitivity }}">
+                第{{ score.run }}次检测 · 灵敏度{{ score.sensitivity }}</span>
+            {% endif %}
+            {% if score.missed_by %}
+            <span class="score-missed-badge {% if score.run and score.run > 1 %}score-missed-badge-below{% endif %}"
+                  title="第 {{ score.missed_by }} 次检测检查了这一段，但没有再次检出这个进球，建议复核">
+                第{{ score.missed_by }}次未检出</span>
+            {% endif %}
             <div class="score-play-overlay" onclick="playSnippet({{ score.id }})" title="查看回放与剪辑">
                 <div class="play-icon">▶</div>
             </div>
@@ -78,7 +177,7 @@
         </div>
         <div class="score-info">
             <div class="score-header">
-                <span class="score-number">#{{ score.id + 1 }}</span>
+                <span class="score-number">#{{ loop.index }}</span>
                 <label class="toggle-switch">
                     <input type="checkbox" {{ 'checked' if score.confirmed }}
                            onchange="toggleConfirm({{ score.id }}, this.checked)">
@@ -177,7 +276,60 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ url_for('static', filename='js/hoop-picker.js') }}"></script>
 <style>
+/* Badges for what a detection of one part of the video found, and for what it did not find again */
+.score-run-badge, .score-missed-badge {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #fff;
+    background: rgba(59, 130, 246, 0.85);
+    white-space: nowrap;
+}
+.score-missed-badge { background: rgba(90, 106, 136, 0.92); }
+.score-missed-badge-below { top: 34px; }
+
+/* While a detection runs, labels are not edited: the list is about to change */
+.review-busy .score-grid, .review-busy .toolbar, .review-busy .actions-card {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* ... and the form gives way to what is running, so that the progress stays above the bar at the bottom */
+.range-running #rangeForm, .range-running .range-hoop, .range-running .range-start-row,
+.range-running .error-msg {
+    display: none;
+}
+
+.range-job {
+    margin-top: 1rem;
+}
+
+.range-job p {
+    margin-bottom: 0.2rem;
+}
+
+.hoop-modal {
+    max-width: 1000px;
+    padding: 1.25rem;
+    text-align: left;
+}
+.hoop-modal-status {
+    min-height: 1.2em;
+    margin: 0.75rem 0 0;
+}
+.hoop-modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
 .score-play-overlay {
     position: absolute;
     inset: 0;
@@ -277,6 +429,205 @@ const SESSION_STATUS = '{{ session.status }}';
 let selectedIds = new Set();
 let stopSnippetTime = 0;
 let currentPlayId = null;
+
+// ── Detecting one part of the video again ──────────────────────────────────────
+const RANGE = {{ range_defaults | tojson }};   // what the next run starts from
+const JOB = {{ job | tojson }};                // the range run that was going on when this page was made, else null
+const FRAME = {width: {{ session.frame_width }}, height: {{ session.frame_height }}};
+
+let nextHoop = RANGE.hoop ? RANGE.hoop.slice() : null;   // the box the next run will use
+let hoopFreshlyPicked = false;
+let hoopPicker = null;
+let hoopDraft = null;
+let rangePollTimer = null;
+
+function parseTime(text) {
+    // '1:23:45', '23:45' or a number of seconds -> seconds; null when it cannot be read
+    const parts = String(text || '').trim().replace(/：/g, ':').split(':');
+    if (parts.length < 1 || parts.length > 3) return null;
+    let seconds = 0;
+    for (const part of parts) {
+        if (!/^\d+(\.\d+)?$/.test(part.trim())) return null;
+        seconds = seconds * 60 + parseFloat(part);
+    }
+    return seconds;
+}
+
+function formatTime(seconds) {
+    seconds = Math.max(0, Math.round(seconds));
+    const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
+    const pad = n => String(n).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+function boxText(box) {
+    return `(${box[0]}, ${box[1]}) → (${box[2]}, ${box[3]})`;
+}
+
+function showHoopChoice() {
+    const videoHoop = RANGE.video_hoop;
+    const isVideoHoop = nextHoop && videoHoop && nextHoop.join() === videoHoop.join();
+    const origin = hoopFreshlyPicked ? '本次使用新框选的区域'
+        : isVideoHoop ? '沿用整段检测的框选' : '沿用上次检测重新框选的区域';
+    document.getElementById('rangeHoopInfo').textContent = nextHoop ? `${origin} ${boxText(nextHoop)}` : '还没有框选，请先框选篮筐';
+    document.getElementById('btnResetHoop').classList.toggle('hidden', !videoHoop || isVideoHoop);
+}
+
+function openHoopPicker() {
+    // The frame shown is the one at the start of the range: that is where the hoop has to be found
+    const start = parseTime(document.getElementById('rangeStart').value) || 0;
+    document.getElementById('hoopFrameTime').textContent = formatTime(start);
+    const status = document.getElementById('hoopPickInfo');
+    const useButton = document.getElementById('btnUseHoop');
+    status.textContent = '正在读取画面...';
+    document.getElementById('hoopModal').classList.remove('hidden');
+    if (!hoopPicker) {
+        hoopPicker = createHoopPicker(document.getElementById('hoopCanvas'), {
+            wrapper: document.getElementById('hoopCanvasWrapper'),
+            onChange: function (region) {
+                hoopDraft = region;
+                status.textContent = region ? '已选区域: ' + boxText(region) : '区域太小，请重新框选';
+                useButton.disabled = !region;
+            }
+        });
+    }
+    hoopDraft = null;
+    useButton.disabled = true;
+    hoopPicker.load(`/api/frame/${VIDEO_ID}?t=${start}`, FRAME.width, FRAME.height,
+        function () {
+            // The box that is used now is shown to start from
+            hoopPicker.setRegion(nextHoop);
+            hoopDraft = nextHoop;
+            useButton.disabled = !nextHoop;
+            status.textContent = nextHoop ? '已选区域: ' + boxText(nextHoop) : '在画面上拖拽框选';
+        },
+        function () {
+            status.textContent = '无法读取这一帧，请检查开始时间';
+        });
+}
+
+function usePickedHoop() {
+    if (!hoopDraft) return;
+    nextHoop = hoopDraft.slice();
+    hoopFreshlyPicked = true;
+    showHoopChoice();
+    closeHoopPicker();
+}
+
+function resetHoop() {
+    nextHoop = RANGE.video_hoop ? RANGE.video_hoop.slice() : null;
+    hoopFreshlyPicked = false;
+    showHoopChoice();
+}
+
+function closeHoopPicker() {
+    document.getElementById('hoopModal').classList.add('hidden');
+}
+
+async function startRangeDetection() {
+    const startText = document.getElementById('rangeStart').value;
+    const endText = document.getElementById('rangeEnd').value;
+    const start = parseTime(startText);
+    if (start === null) return showError('rangeError', '开始时间看不懂，请按 1:23:45、23:45 或秒数填写');
+    let end = null;
+    if (endText.trim()) {
+        end = parseTime(endText);
+        if (end === null) return showError('rangeError', '结束时间看不懂，请按 1:23:45、23:45 或秒数填写');
+        if (end <= start) return showError('rangeError', '结束时间需要晚于开始时间');
+    }
+    if (!nextHoop) {
+        showError('rangeError', '请先框选篮筐区域');
+        openHoopPicker();
+        return;
+    }
+    clearError('rangeError');
+    const button = document.getElementById('btnDetectRange');
+    button.disabled = true;
+    saveScores();  // labels typed on this page that were not sent yet
+
+    try {
+        const response = await fetch('/api/detect-range', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                video_id: VIDEO_ID,
+                start: startText,
+                end: endText,
+                sensitivity: parseInt(document.getElementById('rangeSensitivity').value),
+                hoop_region: nextHoop
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '无法开始检测');
+        window.location.reload();  // the page then follows the run
+    } catch (e) {
+        showError('rangeError', e.message);
+        button.disabled = false;
+    }
+}
+
+function pauseRangeDetection() {
+    fetch(`/api/pause/${VIDEO_ID}`, {method: 'POST', headers: {'Content-Type': 'application/json'}});
+}
+
+// Follows the range run that is going on; the page is reloaded when it has stopped
+function pollRange() {
+    const text = document.getElementById('rangeProgressText');
+    fetch(`/api/status/${VIDEO_ID}`)
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'processing') {
+            // progress is the position in the whole video; the part before the range is not shown
+            const from = JOB.from_frame;
+            const to = JOB.end_frame === null ? JOB.total_frames : JOB.end_frame;
+            const frame = data.progress * JOB.total_frames;
+            const pct = Math.max(0, Math.min(100, Math.round((frame - from) / Math.max(1, to - from) * 100)));
+            document.getElementById('rangeProgressFill').style.width = pct + '%';
+            document.getElementById('rangeProgressPct').textContent = pct + '%';
+            text.textContent = `正在检测第 ${JOB.run} 次，本次已新增 ${data.new_count} 个进球`;
+            rangePollTimer = setTimeout(pollRange, 1000);
+        } else if (data.status === 'done' || data.status === 'paused') {
+            window.location.reload();
+        } else if (data.status === 'error') {
+            text.textContent = '检测失败: ' + (data.error || '未知错误');
+            setTimeout(() => window.location.reload(), 2500);
+        } else {
+            text.textContent = '暂时连不上服务，正在重试...';
+            rangePollTimer = setTimeout(pollRange, 2000);
+        }
+    })
+    .catch(() => {
+        text.textContent = '暂时连不上服务，正在重试...';
+        rangePollTimer = setTimeout(pollRange, 2000);
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const slider = document.getElementById('rangeSensitivity');
+    const showSensitivity = () => {
+        document.getElementById('rangeSensitivityValue').textContent = slider.value;
+    };
+    slider.addEventListener('input', showSensitivity);
+    showSensitivity();
+    if (RANGE.duration !== null) {
+        document.getElementById('rangeDuration').textContent = `视频总长 ${formatTime(RANGE.duration)}`;
+    }
+    showHoopChoice();
+    if (JOB) {
+        document.body.classList.add('review-busy');
+        document.getElementById('rangeCard').classList.add('range-running');
+        document.getElementById('rangeStart').value = formatTime(JOB.start);
+        document.getElementById('rangeEnd').value = JOB.end === null ? '' : formatTime(JOB.end);
+        slider.value = JOB.sensitivity;
+        showSensitivity();
+        document.getElementById('rangeJobSummary').textContent =
+            `正在检测第 ${JOB.run} 次：${formatTime(JOB.start)} – ${JOB.end === null ? '视频结尾' : formatTime(JOB.end)}，灵敏度 ${JOB.sensitivity}`;
+        document.getElementById('rangeJobHoop').textContent = `篮筐区域 ${boxText(JOB.hoop_region)}`;
+        document.getElementById('rangeJob').classList.remove('hidden');
+        document.getElementById('rangeProgress').classList.remove('hidden');
+        pollRange();
+    }
+});
 
 function getClipRange(score) {
     return {
