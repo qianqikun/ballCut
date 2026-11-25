@@ -28,6 +28,14 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 # In-memory task tracking
 tasks = {}  # video_id -> {progress, status, error, paused, resume_event, paused_frame, score_count}
 
+# Session files are read-modify-written by the detection thread (new scores, checkpoints) and by
+# requests from the review page at the same time, so those operations are serialized.
+_session_lock = threading.RLock()
+
+# A detection can be continued from a session in one of these states: paused by the user, or
+# interrupted while it was running (server restart, crash) or failed with an error.
+RESUMABLE_STATUSES = ('paused', 'processing', 'error')
+
 
 def get_session_path(video_id):
     return os.path.join(SESSION_DIR, f'{video_id}.json')
@@ -36,16 +44,18 @@ def get_session_path(video_id):
 def load_session(video_id):
     path = get_session_path(video_id)
     if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        with _session_lock:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
     return None
 
 
 def save_session(video_id, data):
     os.makedirs(SESSION_DIR, exist_ok=True)
     path = get_session_path(video_id)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with _session_lock:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 # ─── Pages ────────────────────────────────────────────
@@ -61,7 +71,8 @@ def review(video_id):
     if not session:
         return redirect(url_for('index'))
     return render_template('review.html', video_id=video_id, session=session,
-                           clip_before=CLIP_BEFORE, clip_after=CLIP_AFTER)
+                           clip_before=CLIP_BEFORE, clip_after=CLIP_AFTER,
+                           running=tasks.get(video_id, {}).get('status') == 'processing')
 
 
 @app.route('/highlights/<video_id>')
@@ -145,8 +156,9 @@ def api_sessions():
                 # Use os.path.getmtime for sorting
                 mtime = os.path.getmtime(session_path)
                 
-                with open(session_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                with _session_lock:
+                    with open(session_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
                     
                 # Extract relevant info
                 video_path = data.get('video_path', '')
@@ -159,6 +171,9 @@ def api_sessions():
                     'video_id': video_id,
                     'filename': orig_filename,
                     'status': data.get('status', 'unknown'),
+                    # 'processing' but not running means the detection was interrupted, e.g. by a server restart
+                    'running': tasks.get(video_id, {}).get('status') == 'processing',
+                    'error': data.get('error'),
                     'score_count': len(data.get('scores', [])),
                     'mtime': mtime,
                     'timestamp': os.path.getctime(session_path) if hasattr(os.path, 'getctime') else mtime
@@ -193,6 +208,12 @@ def api_detect():
     session['hoop_region'] = hoop_region
     session['sensitivity'] = sensitivity
     session['debug_enabled'] = debug_mode
+    session['status'] = 'processing'
+    # A fresh run starts from the first frame
+    session.pop('paused_frame', None)
+    session.pop('paused_frame_ms', None)
+    session.pop('progress', None)
+    session.pop('error', None)
     save_session(video_id, session)
 
     # Init task tracking
@@ -233,50 +254,68 @@ def api_pause(video_id):
 
 @app.route('/api/resume/<video_id>', methods=['POST'])
 def api_resume(video_id):
-    """Resume a paused detection from where it left off."""
-    session = load_session(video_id)
-    if not session:
-        return jsonify({'error': '会话不存在'}), 404
-    
-    task = tasks.get(video_id)
-    if task:
-        if task['status'] != 'paused':
+    """Continue a detection from where it left off: paused, interrupted by a restart, or failed."""
+    with _session_lock:
+        session = load_session(video_id)
+        if not session:
+            return jsonify({'error': '会话不存在'}), 404
+
+        task = tasks.get(video_id)
+        if task and task['status'] in ('processing', 'generating'):
             return jsonify({'error': '没有已暂停的检测任务'}), 400
-        start_frame = task.get('paused_frame', 0)
-    elif session.get('status') == 'paused':
-        # tasks only lives in memory, so after a restart fall back to the frame saved in the session
-        start_frame = session.get('paused_frame', 0)
-    else:
-        return jsonify({'error': '没有已暂停的检测任务'}), 400
+        if task and task['status'] == 'paused':
+            start_frame = task.get('paused_frame', 0)
+        elif session.get('status') in RESUMABLE_STATUSES:
+            # tasks only lives in memory, so without a paused task fall back to the frame saved in
+            # the session: the pause position, or the last checkpoint written while detection ran
+            start_frame = session.get('paused_frame', 0)
+        else:
+            return jsonify({'error': '没有已暂停的检测任务'}), 400
+
+        # Never replay a score that is already saved
+        last_score_frame = max((s.get('frame', -1) for s in session.get('scores', [])), default=-1)
+        start_frame = max(start_frame, last_score_frame + 1)
+
+        session['status'] = 'processing'
+        session.pop('error', None)
+        save_session(video_id, session)
 
     hoop_region = session.get('hoop_region')
     sensitivity = session.get('sensitivity', 50)
     debug_mode = session.get('debug_enabled', False)
-    
+
     existing_scores = session.get('scores', [])
-    
+
     # Reset task state for resuming
     if not task:
-        task = {'progress': 0.0, 'paused_frame': start_frame, 'score_count': len(existing_scores)}
+        task = {'progress': 0.0, 'paused': False}
         tasks[video_id] = task
     task['status'] = 'processing'
     task['paused'] = False
     task['error'] = None
-    
-    # Run detection in background, resuming from paused_frame
+    task['paused_frame'] = start_frame
+    task['score_count'] = len(existing_scores)
+    # Shown while the model is still loading: where the detection continues from, not zero
+    task['progress'] = max(task.get('progress') or 0.0, session.get('progress') or 0.0)
+
+    # The detector uses the timestamp of the last analysed frame to land exactly on start_frame. It belongs
+    # to the saved position, so it is only usable when that position was not moved past a newer score.
+    resume_pos_ms = session.get('paused_frame_ms') if start_frame == session.get('paused_frame') else None
+
+    # Run detection in background, resuming from start_frame
     thread = threading.Thread(
         target=_run_detection,
         args=(video_id, session['video_path'], hoop_region, sensitivity, debug_mode,
-              start_frame, existing_scores),
+              start_frame, existing_scores, resume_pos_ms),
         daemon=True
     )
     thread.start()
-    
+
     return jsonify({'status': 'resumed', 'start_frame': start_frame})
 
 
 def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
-                   start_frame=0, existing_scores=None):
+                   start_frame=0, existing_scores=None, resume_pos_ms=None):
     """Background detection task."""
     try:
         def progress_cb(p):
@@ -290,19 +329,34 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
             """Called each time a new score is detected."""
             tasks[video_id]['score_count'] = len(detector_scores)
             # Save interim results to session
-            session = load_session(video_id)
-            if session:
-                # Merge existing labels from session into the detector's score list
-                old_scores = session.get('scores', [])
-                old_map = {s['id']: s for s in old_scores}
-                for s in detector_scores:
-                    old = old_map.get(s['id'])
-                    if old:
-                        s['player'] = old.get('player', '')
-                        s['confirmed'] = old.get('confirmed', True)
-                
-                session['scores'] = detector_scores
-                save_session(video_id, session)
+            with _session_lock:
+                session = load_session(video_id)
+                if session:
+                    # Merge existing labels from session into the detector's score list
+                    old_scores = session.get('scores', [])
+                    old_map = {s['id']: s for s in old_scores}
+                    for s in detector_scores:
+                        old = old_map.get(s['id'])
+                        if old:
+                            s['player'] = old.get('player', '')
+                            s['confirmed'] = old.get('confirmed', True)
+
+                    session['scores'] = detector_scores
+                    save_session(video_id, session)
+
+        def checkpoint_cb(frame, pos_ms):
+            """Called every few seconds while detection runs, so that a restart can continue from here."""
+            try:
+                with _session_lock:
+                    session = load_session(video_id)
+                    if session:
+                        session['paused_frame'] = frame
+                        session['paused_frame_ms'] = pos_ms
+                        session['progress'] = tasks.get(video_id, {}).get('progress')
+                        save_session(video_id, session)
+            except OSError as e:
+                # Not being able to save the position must not stop the detection
+                logger.warning(f"Could not save the detection position for {video_id}: {e}")
 
         thumb_dir = os.path.join(THUMBNAIL_DIR, video_id)
         detector = ScoreDetector(
@@ -319,38 +373,47 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
             pause_check=pause_check,
             score_callback=score_cb,
             start_frame=start_frame,
-            existing_scores=existing_scores
+            existing_scores=existing_scores,
+            checkpoint_callback=checkpoint_cb,
+            resume_pos_ms=resume_pos_ms
         )
         
         scores, last_frame = result
 
         # Final merge and save
-        session = load_session(video_id)
-        if session:
-            old_scores = session.get('scores', [])
-            old_map = {s['id']: s for s in old_scores}
-            for s in scores:
-                old = old_map.get(s['id'])
-                if old:
-                    s['player'] = old.get('player', '')
-                    s['confirmed'] = old.get('confirmed', True)
-            
-            session['scores'] = scores
-            
-            # Check if we were paused (detection returned early)
-            if tasks.get(video_id, {}).get('paused', False):
-                session['status'] = 'paused'
-                session['paused_frame'] = last_frame
-                save_session(video_id, session)
+        with _session_lock:
+            session = load_session(video_id)
+            if session:
+                old_scores = session.get('scores', [])
+                old_map = {s['id']: s for s in old_scores}
+                for s in scores:
+                    old = old_map.get(s['id'])
+                    if old:
+                        s['player'] = old.get('player', '')
+                        s['confirmed'] = old.get('confirmed', True)
                 
-                tasks[video_id]['status'] = 'paused'
-                tasks[video_id]['paused_frame'] = last_frame
-                tasks[video_id]['score_count'] = len(scores)
-                logger.info(f"Detection paused for {video_id} at frame {last_frame}: {len(scores)} events so far")
-                return
+                session['scores'] = scores
 
-            session['status'] = 'detected'
-            save_session(video_id, session)
+                # Check if we were paused (detection returned early)
+                if tasks.get(video_id, {}).get('paused', False):
+                    session['status'] = 'paused'
+                    session['paused_frame'] = last_frame
+                    session['paused_frame_ms'] = getattr(detector, 'paused_pos_ms', None)
+                    session['progress'] = tasks[video_id].get('progress')
+                    save_session(video_id, session)
+
+                    tasks[video_id]['status'] = 'paused'
+                    tasks[video_id]['paused_frame'] = last_frame
+                    tasks[video_id]['score_count'] = len(scores)
+                    logger.info(f"Detection paused for {video_id} at frame {last_frame}: {len(scores)} events so far")
+                    return
+
+                session['status'] = 'detected'
+                session.pop('paused_frame', None)
+                session.pop('paused_frame_ms', None)
+                session.pop('progress', None)
+                session.pop('error', None)
+                save_session(video_id, session)
 
         tasks[video_id]['status'] = 'done'
         tasks[video_id]['progress'] = 1.0
@@ -361,6 +424,16 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
         logger.exception(f"Detection failed for {video_id}")
         tasks[video_id]['status'] = 'error'
         tasks[video_id]['error'] = str(e)
+        # Keep what was found and the last saved position, so that the run can be continued
+        try:
+            with _session_lock:
+                session = load_session(video_id)
+                if session:
+                    session['status'] = 'error'
+                    session['error'] = str(e)
+                    save_session(video_id, session)
+        except OSError as save_error:
+            logger.warning(f"Could not record the detection error for {video_id}: {save_error}")
 
 
 @app.route('/api/status/<video_id>')
@@ -390,12 +463,13 @@ def api_update_scores():
     video_id = data.get('video_id')
     scores = data.get('scores', [])
 
-    session = load_session(video_id)
-    if not session:
-        return jsonify({'error': '会话不存在'}), 404
+    with _session_lock:
+        session = load_session(video_id)
+        if not session:
+            return jsonify({'error': '会话不存在'}), 404
 
-    session['scores'] = scores
-    save_session(video_id, session)
+        session['scores'] = scores
+        save_session(video_id, session)
     return jsonify({'status': 'ok'})
 
 
@@ -411,6 +485,9 @@ def api_generate():
     session = load_session(video_id)
     if not session:
         return jsonify({'error': '会话不存在'}), 404
+
+    if tasks.get(video_id, {}).get('status') == 'processing':
+        return jsonify({'error': '检测还在进行中，请等检测结束后再生成'}), 400
 
     confirmed = [s for s in session['scores'] if s.get('confirmed', True)]
     if not confirmed:

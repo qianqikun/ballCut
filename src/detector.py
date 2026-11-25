@@ -215,14 +215,20 @@ class ShotTracker:
 class ScoreDetector:
     """Detects scoring events by analyzing YOLOv8 object trajectories and validating them against hoop constraints."""
 
+    CHECKPOINT_SECONDS = 5.0  # how often checkpoint_callback reports the position inside the video
+    RESUME_REWIND_SECONDS = 2.0  # how far before the saved position a resumed run starts analysing
+
     def __init__(self, hoop_region, frame_skip=3, min_interval=5.0, sensitivity=50):
         self.hoop_region = tuple(int(v) for v in hoop_region)
         self.frame_skip = max(1, frame_skip)
         self.min_interval = min_interval
         self.sensitivity = int(sensitivity)
+        # Timestamp (ms) of the last analysed frame when detect() stopped for a pause
+        self.paused_pos_ms = None
 
     def detect(self, video_path, video_id, thumbnail_dir, progress_callback=None, debug_video=False,
-               pause_check=None, score_callback=None, start_frame=0, existing_scores=None):
+               pause_check=None, score_callback=None, start_frame=0, existing_scores=None,
+               checkpoint_callback=None, resume_pos_ms=None):
         """
         Process video and detect scoring events.
 
@@ -232,6 +238,10 @@ class ScoreDetector:
             score_callback: callable(scores_metadata) called each time a score is detected.
             start_frame: frame index to start/resume detection from.
             existing_scores: list of pre-existing score dicts when resuming.
+            checkpoint_callback: callable(frame_idx, pos_ms) every CHECKPOINT_SECONDS of video, so
+                         that the caller can store where to continue after a restart.
+            resume_pos_ms: timestamp (ms) of the frame before start_frame, as reported by an earlier
+                         run. Used to land exactly on start_frame when resuming.
         """
         device = get_device()
         with _model_lock:
@@ -286,6 +296,7 @@ class ScoreDetector:
             logger.info(f"Debug video enabled, saving to: {debug_path}")
 
         tracker = ShotTracker(hoop_rect, fps, self.min_interval)
+        checkpoint_every = max(1, round(fps * self.CHECKPOINT_SECONDS))
         scores_metadata = list(existing_scores) if existing_scores else []
 
         # If resuming, continue the numbering and the throttle from the existing scores
@@ -294,24 +305,46 @@ class ScoreDetector:
         score_count = len(scores_metadata)
 
         frame_idx = 0
+        resync_ms = None
 
         os.makedirs(thumbnail_dir, exist_ok=True)
 
-        # If resuming, skip to start_frame
+        # If resuming: a pause or a restart can cut a shot in two, and the tracker only sees the frames
+        # from here on. So rewind a little to catch the start of a shot that was in progress. Scores found
+        # there are already saved, and the throttle keeps them from being counted twice.
         if start_frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            frame_idx = start_frame
-            logger.info(f"Resuming detection from frame {start_frame}")
+            rewind = min(start_frame, round(fps * self.RESUME_REWIND_SECONDS))
+            frame_idx = start_frame - rewind
+            if resume_pos_ms and frame_idx > 0:
+                # Seeking is not frame-accurate: it can land a few frames after the requested one, and
+                # the error grows with the position in the video. So seek further back and read up to
+                # the wanted timestamp instead, which is exact.
+                back = 2 * fps + frame_idx // 100
+                cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_idx - back))
+                wanted_ms = resume_pos_ms - self.RESUME_REWIND_SECONDS * 1000
+                while cap.read()[0] and cap.get(cv2.CAP_PROP_POS_MSEC) < wanted_ms:
+                    pass
+                resync_ms = resume_pos_ms
+            else:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            logger.info(f"Resuming detection at frame {frame_idx} (checkpoint {start_frame})")
 
         while cap.isOpened():
             # Check for pause
             if pause_check and pause_check():
                 logger.info(f"Detection paused at frame {frame_idx}")
+                self.paused_pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
                 return scores_metadata, frame_idx  # Return current results and position
 
             ret, frame = cap.read()
             if not ret:
                 break
+
+            if resync_ms is not None and cap.get(cv2.CAP_PROP_POS_MSEC) >= resync_ms:
+                # Back at the last frame analysed before the interruption: from the next frame on the
+                # frame numbers are exact again (the rewind distance in time is not a whole number of frames)
+                frame_idx = max(frame_idx, start_frame - 1)
+                resync_ms = None
 
             with _model_lock:
                 results = model(frame[ry1:ry2, rx1:rx2], conf=model_conf, device=device, verbose=False)
@@ -403,6 +436,9 @@ class ScoreDetector:
             frame_idx += 1
             if progress_callback and frame_idx % 30 == 0:
                 progress_callback(frame_idx / (total_frames or 1))
+            # frame_idx is now the first frame that has not been analysed yet
+            if checkpoint_callback and frame_idx % checkpoint_every == 0:
+                checkpoint_callback(frame_idx, cap.get(cv2.CAP_PROP_POS_MSEC))
 
         cap.release()
         if video_writer:

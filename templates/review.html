@@ -10,15 +10,19 @@
     </p>
 </div>
 
-{% if session.status == 'paused' %}
+{% if not running and session.status in ['paused', 'processing', 'error'] %}
 <section class="card paused-banner">
     <div class="paused-banner-content">
         <div class="paused-info">
-            <span class="paused-icon">⏸️</span>
+            <span class="paused-icon">{{ '⏸️' if session.status == 'paused' else '⚠️' }}</span>
             <div>
-                <strong>检测已暂停</strong>
+                <strong>{{ '检测已暂停' if session.status == 'paused' else '检测还没有完成' }}</strong>
+                {% if session.status == 'error' and session.error %}
+                <p>检测出错：{{ session.error }}。可以从上次检测到的地方继续</p>
+                {% else %}
                 <p>可在此审核已识别的进球，删除误检的片段，完成后点击继续检测
                 </p>
+                {% endif %}
             </div>
         </div>
         <button class="btn btn-primary btn-lg btn-pulse" onclick="resumeDetection()">
@@ -107,7 +111,7 @@
     </div>
 </section>
 
-{% if session.status == 'paused' %}
+{% if not running and session.status in ['paused', 'processing', 'error'] %}
 <section class="card paused-banner paused-banner-bottom">
     <div class="paused-banner-content">
         <div class="paused-info">

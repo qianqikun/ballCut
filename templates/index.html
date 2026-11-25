@@ -7,6 +7,9 @@
     <p class="subtitle">上传篮球比赛视频，自动检测进球并生成个人集锦</p>
 </div>
 
+<!-- Detections that need attention: interrupted ones, and running ones this page is not following -->
+<section class="card notice-banner hidden" id="noticeBanner"></section>
+
 <!-- History Records -->
 <section class="history-section hidden" id="historySection">
     <div class="history-header">
@@ -88,6 +91,12 @@
         </button>
     </div>
 
+    <div class="detection-back-row">
+        <button class="btn btn-sm btn-outline" id="btnBack" onclick="leaveProgress()">
+            ← 返回上传（检测会继续在后台进行）
+        </button>
+    </div>
+
     <div class="processing-animation" id="processingAnim">
         <div class="bounce-ball"></div>
     </div>
@@ -106,20 +115,32 @@
     let isDrawing = false;
     let startX, startY, endX, endY;
     let isPausing = false;
+    let pollTimer = null;
+    let pollToken = 0;  // bumped whenever the page starts or stops following a detection
+    let pollFailures = 0;  // consecutive status requests that got no answer
 
     const STATUS_MAP = {
         'ready': { text: '待处理', class: 'status-ready' },
-        'processing': { text: '正在检测', class: 'status-detected' },
+        // 'processing' is shown only when nothing is running for the session any more (see loadHistory)
+        'processing': { text: '已中断', class: 'status-paused' },
+        'error': { text: '检测出错', class: 'status-paused' },
         'detected': { text: '已检测', class: 'status-detected' },
         'paused': { text: '已暂停', class: 'status-paused' },
         'complete': { text: '已完成', class: 'status-complete' },
         'unknown': { text: '未知', class: 'status-ready' }
     };
 
-    // Load history on startup
-    window.addEventListener('DOMContentLoaded', loadHistory);
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, c => (
+            {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]
+        ));
+    }
 
-    function loadHistory() {
+    // Load history on startup
+    window.addEventListener('DOMContentLoaded', () => loadHistory(true));
+
+    // followRunning: on a fresh page load, follow a detection that is still running
+    function loadHistory(followRunning) {
         const historyGrid = document.getElementById('historyGrid');
         const historySection = document.getElementById('historySection');
         
@@ -128,6 +149,7 @@
         .then(sessions => {
             if (!sessions || sessions.length === 0) {
                 historySection.classList.add('hidden');
+                showNotices([]);
                 return;
             }
             
@@ -135,7 +157,11 @@
             document.getElementById('historyCount').textContent = `共 ${sessions.length} 条记录`;
             
             historyGrid.innerHTML = sessions.map(session => {
-                const status = STATUS_MAP[session.status] || STATUS_MAP['unknown'];
+                // A detection that is running right now is followed on the progress page
+                const status = session.running
+                    ? { text: '正在检测', class: 'status-detected' }
+                    : (STATUS_MAP[session.status] || STATUS_MAP['unknown']);
+                const href = session.running ? `/?watch=${session.video_id}` : `/review/${session.video_id}`;
                 const date = new Date(session.mtime * 1000).toLocaleDateString('zh-CN', {
                     month: 'short',
                     day: 'numeric',
@@ -144,13 +170,13 @@
                 });
                 
                 return `
-                <a href="/review/${session.video_id}" class="history-item">
+                <a href="${href}" class="history-item">
                     <div class="history-thumb-wrapper">
                         <img src="/api/first-frame/${session.video_id}" class="history-thumb" alt="视频预览" onerror="this.src='/static/img/no-thumb.jpg'">
                         <div class="history-status-badge ${status.class}">${status.text}</div>
                     </div>
                     <div class="history-info">
-                        <div class="history-filename" title="${session.filename}">${session.filename}</div>
+                        <div class="history-filename" title="${escapeHtml(session.filename)}">${escapeHtml(session.filename)}</div>
                         <div class="history-meta">
                             <div class="history-date">
                                 📅 ${date}
@@ -163,6 +189,14 @@
                 </a>
                 `;
             }).join('');
+
+            // After a refresh this page no longer knows about the detection it started:
+            // go back to the progress page of a detection that is still running
+            const running = sessions.filter(session => session.running);
+            if (followRunning && !videoId && running.length) {
+                enterProgress(running[0].video_id);
+            }
+            showNotices(sessions);
         })
         .catch(err => {
             console.error('Failed to load history:', err);
@@ -170,15 +204,89 @@
         });
     }
 
-    // Check for resume parameter on page load
-    (function checkResume() {
+    // Detections that need a decision but are not on screen: interrupted ones, and running ones
+    // other than the one this page is following
+    function showNotices(sessions) {
+        const banner = document.getElementById('noticeBanner');
+        const lines = sessions.filter(session => session.running
+            ? session.video_id !== videoId
+            : ['processing', 'error'].includes(session.status));
+
+        if (lines.length === 0) {
+            banner.classList.add('hidden');
+            return;
+        }
+
+        banner.classList.remove('hidden');
+        banner.innerHTML = lines.map(session => {
+            const name = escapeHtml(session.filename);
+            if (session.running) {
+                return `
+                <div class="notice-line">
+                    <span>「${name}」正在检测，已发现 ${session.score_count} 个进球</span>
+                    <a class="btn btn-sm btn-primary" href="/?watch=${session.video_id}">查看进度</a>
+                </div>`;
+            }
+            const reason = session.error ? `：${escapeHtml(session.error)}` : '，可以从中断的位置继续';
+            return `
+                <div class="notice-line">
+                    <span>「${name}」的检测没有完成${reason}</span>
+                    <a class="btn btn-sm btn-primary" href="/?resume=${session.video_id}">▶ 继续检测</a>
+                </div>`;
+        }).join('');
+    }
+
+    function stopPolling() {
+        pollToken++;
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    function showProgressStep(text) {
+        stopPolling();
+        isPausing = false;
+        pollFailures = 0;
+        const btn = document.getElementById('btnPause');
+        btn.disabled = false;
+        btn.textContent = '⏸ 暂停检测';
+        btn.onclick = pauseDetection;
+        document.getElementById('progressText').textContent = text;
+        document.getElementById('step3').classList.remove('hidden');
+        document.getElementById('step3').scrollIntoView({behavior: 'smooth'});
+    }
+
+    // Follow one video's detection on the progress page: started here, found again after a
+    // refresh, or continued after an interruption
+    function enterProgress(id, text) {
+        videoId = id;
+        showProgressStep(text || '检测进行中...');
+        pollProgress();
+    }
+
+    function leaveProgress() {
+        // The detection keeps running on the server, this page only stops following it
+        stopPolling();
+        videoId = null;
+        hoopRegion = null;
+        document.getElementById('step3').classList.add('hidden');
+        document.getElementById('step2').classList.add('hidden');
+        document.getElementById('btnStartDetect').disabled = true;
+        document.getElementById('step1').scrollIntoView({behavior: 'smooth'});
+        loadHistory();
+    }
+
+    // ?resume=<id> continues an interrupted detection, ?watch=<id> follows a running one
+    (function checkUrlOnLoad() {
         const params = new URLSearchParams(window.location.search);
-        const resumeId = params.get('resume');
+        // Video ids are 12 hex characters; anything else in the URL is ignored
+        const fromUrl = name => (/^[0-9a-f]{12}$/.test(params.get(name)) ? params.get(name) : null);
+        const resumeId = fromUrl('resume');
+        const watchId = fromUrl('watch');
         if (resumeId) {
             videoId = resumeId;
-            // Show step 3 directly
-            document.getElementById('step3').classList.remove('hidden');
-            document.getElementById('progressText').textContent = '正在恢复检测...';
+            showProgressStep('正在恢复检测...');
             
             // Call resume API
             fetch(`/api/resume/${resumeId}`, {
@@ -188,12 +296,14 @@
             .then(r => r.json())
             .then(data => {
                 if (data.error) throw new Error(data.error);
-                document.getElementById('progressText').textContent = '检测继续中...';
-                pollProgress();
+                enterProgress(resumeId, '检测继续中...');
             })
             .catch(e => {
-                document.getElementById('progressText').textContent = '恢复失败: ' + e.message;
+                document.getElementById('progressText').innerHTML =
+                    '恢复失败: ' + escapeHtml(e.message) + '，可先 <a href="/review/' + resumeId + '">打开审核页</a> 查看已找到的进球';
             });
+        } else if (watchId) {
+            enterProgress(watchId);
         }
     })();
 
@@ -370,8 +480,7 @@
 
         const sensitivity = parseInt(document.getElementById('sensitivity').value);
 
-        document.getElementById('step3').classList.remove('hidden');
-        document.getElementById('step3').scrollIntoView({behavior: 'smooth'});
+        showProgressStep('正在检测进球...');
         document.getElementById('btnStartDetect').disabled = true;
 
         fetch('/api/detect', {
@@ -395,33 +504,87 @@
     }
 
     function pollProgress() {
-        fetch(`/api/status/${videoId}`)
+        const id = videoId;
+        const token = pollToken;
+        if (!id) return;
+
+        fetch(`/api/status/${id}`)
         .then(r => r.json())
         .then(data => {
-            const pct = Math.round(data.progress * 100);
-            document.getElementById('progressFill').style.width = pct + '%';
-            document.getElementById('progressPct').textContent = pct + '%';
-            
-            // Update score counter
-            if (data.score_count !== undefined) {
-                document.getElementById('scoreCounter').innerHTML = 
-                    '已发现 <strong>' + data.score_count + '</strong> 个进球';
+            if (token !== pollToken) return;  // the page stopped following, or re-attached to, this detection
+
+            if (pollFailures) {
+                pollFailures = 0;
+                document.getElementById('progressText').textContent = '检测进行中...';
+            }
+
+            // 'unknown' means the server lost the task (it was restarted): keep what was last shown
+            if (data.status !== 'unknown') {
+                const pct = Math.round(data.progress * 100);
+                document.getElementById('progressFill').style.width = pct + '%';
+                document.getElementById('progressPct').textContent = pct + '%';
+
+                // Update score counter
+                if (data.score_count !== undefined) {
+                    document.getElementById('scoreCounter').innerHTML =
+                        '已发现 <strong>' + data.score_count + '</strong> 个进球';
+                }
             }
 
             if (data.status === 'paused') {
                 // Detection paused, redirect to review page
-                window.location.href = `/review/${videoId}`;
+                window.location.href = `/review/${id}`;
             } else if (data.status === 'done') {
-                window.location.href = `/review/${videoId}`;
+                window.location.href = `/review/${id}`;
             } else if (data.status === 'error') {
                 document.getElementById('progressText').textContent =
-                    '检测失败: ' + (data.error || '未知错误');
-                document.getElementById('btnPause').disabled = true;
+                    '检测失败: ' + (data.error || '未知错误') + '。可以从上次检测到的地方重试';
+                offerContinue();
+            } else if (data.status === 'unknown') {
+                // The server lost the task, e.g. it was restarted while detection was running
+                document.getElementById('progressText').textContent =
+                    '检测中断了（服务可能重启过）。可以从上次检测到的地方继续';
+                offerContinue();
             } else {
-                setTimeout(pollProgress, 1000);
+                pollTimer = setTimeout(pollProgress, 1000);
             }
         })
-        .catch(() => setTimeout(pollProgress, 2000));
+        .catch(() => {
+            if (token !== pollToken) return;
+            // The server may be restarting: keep trying, and say so if it stays unreachable
+            if (++pollFailures === 5) {
+                document.getElementById('progressText').textContent = '暂时连不上服务，正在重试...';
+            }
+            pollTimer = setTimeout(pollProgress, 2000);
+        });
+    }
+
+    // Turn the pause button into "continue" when the detection stopped before it was finished
+    function offerContinue() {
+        const btn = document.getElementById('btnPause');
+        btn.disabled = false;
+        btn.textContent = '▶ 继续检测';
+        btn.onclick = resumeInterrupted;
+    }
+
+    function resumeInterrupted() {
+        const btn = document.getElementById('btnPause');
+        btn.disabled = true;
+        document.getElementById('progressText').textContent = '正在从上次检测到的地方继续...';
+
+        fetch(`/api/resume/${videoId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) throw new Error(data.error);
+            enterProgress(videoId, '检测继续中...');
+        })
+        .catch(e => {
+            btn.disabled = false;
+            document.getElementById('progressText').textContent = '继续失败: ' + e.message;
+        });
     }
 
     function pauseDetection() {
