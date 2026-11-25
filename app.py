@@ -60,7 +60,8 @@ def review(video_id):
     session = load_session(video_id)
     if not session:
         return redirect(url_for('index'))
-    return render_template('review.html', video_id=video_id, session=session)
+    return render_template('review.html', video_id=video_id, session=session,
+                           clip_before=CLIP_BEFORE, clip_after=CLIP_AFTER)
 
 
 @app.route('/highlights/<video_id>')
@@ -73,7 +74,7 @@ def highlights(video_id):
 
 # ─── API ──────────────────────────────────────────────
 
-from werkzeug.utils import secure_filename
+from werkzeug.utils import secure_filename, safe_join
 
 @app.route('/api/upload-video', methods=['POST'])
 def api_upload_video():
@@ -233,22 +234,31 @@ def api_pause(video_id):
 @app.route('/api/resume/<video_id>', methods=['POST'])
 def api_resume(video_id):
     """Resume a paused detection from where it left off."""
-    task = tasks.get(video_id)
-    if not task or task['status'] != 'paused':
-        return jsonify({'error': '没有已暂停的检测任务'}), 400
-    
     session = load_session(video_id)
     if not session:
         return jsonify({'error': '会话不存在'}), 404
     
+    task = tasks.get(video_id)
+    if task:
+        if task['status'] != 'paused':
+            return jsonify({'error': '没有已暂停的检测任务'}), 400
+        start_frame = task.get('paused_frame', 0)
+    elif session.get('status') == 'paused':
+        # tasks only lives in memory, so after a restart fall back to the frame saved in the session
+        start_frame = session.get('paused_frame', 0)
+    else:
+        return jsonify({'error': '没有已暂停的检测任务'}), 400
+
     hoop_region = session.get('hoop_region')
     sensitivity = session.get('sensitivity', 50)
     debug_mode = session.get('debug_enabled', False)
     
-    # Reset task state for resuming
-    start_frame = task.get('paused_frame', 0)
     existing_scores = session.get('scores', [])
     
+    # Reset task state for resuming
+    if not task:
+        task = {'progress': 0.0, 'paused_frame': start_frame, 'score_count': len(existing_scores)}
+        tasks[video_id] = task
     task['status'] = 'processing'
     task['paused'] = False
     task['error'] = None
@@ -330,6 +340,7 @@ def _run_detection(video_id, video_path, hoop_region, sensitivity, debug_mode,
             # Check if we were paused (detection returned early)
             if tasks.get(video_id, {}).get('paused', False):
                 session['status'] = 'paused'
+                session['paused_frame'] = last_frame
                 save_session(video_id, session)
                 
                 tasks[video_id]['status'] = 'paused'
@@ -481,8 +492,9 @@ def api_download(video_id, filename):
 @app.route('/api/download_folder/<video_id>/<folder>')
 def api_download_folder(video_id, folder):
     """Download a player's shot folder as a ZIP."""
-    player_dir = os.path.join(OUTPUT_DIR, video_id, folder)
-    if not os.path.exists(player_dir):
+    # safe_join returns None when either segment escapes OUTPUT_DIR (e.g. "..")
+    player_dir = safe_join(OUTPUT_DIR, video_id, folder)
+    if not player_dir or not os.path.isdir(player_dir):
         return "Folder not found", 404
         
     temp_zip = f"{player_dir}.zip"
@@ -501,4 +513,5 @@ if __name__ == '__main__':
     os.makedirs(SESSION_DIR, exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
     
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    # Listen on localhost by default; set HOST=0.0.0.0 to reach the app from other devices on the LAN
+    app.run(host=os.environ.get('HOST', '127.0.0.1'), port=8080, debug=True)

@@ -146,8 +146,8 @@
         
         <div style="margin-top: 15px; padding: 15px 20px; background: rgba(0,0,0,0.3); border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
-                <span style="font-size: 0.9em; color: var(--text-secondary);">进球前起始点: <strong id="modalBeforeVal" style="color:var(--accent)">4.0</strong>s</span>
-                <span style="font-size: 0.9em; color: var(--text-secondary);">进球后结束点: <strong id="modalAfterVal" style="color:var(--accent)">2.0</strong>s</span>
+                <span style="font-size: 0.9em; color: var(--text-secondary);">进球前起始点: <strong id="modalBeforeVal" style="color:var(--accent)">{{ clip_before }}</strong>s</span>
+                <span style="font-size: 0.9em; color: var(--text-secondary);">进球后结束点: <strong id="modalAfterVal" style="color:var(--accent)">{{ clip_after }}</strong>s</span>
             </div>
             
             <div class="trim-control">
@@ -155,9 +155,9 @@
                 <div class="trim-selection" id="trimSelection"></div>
                 
                 <!-- min controls start time (-8 to +4) -->
-                <input type="range" id="trimMin" class="trim-input" min="-8" max="4" step="0.5" value="-4">
+                <input type="range" id="trimMin" class="trim-input" min="-8" max="4" step="0.5" value="-{{ clip_before }}">
                 <!-- max controls end time (-8 to +4) -->
-                <input type="range" id="trimMax" class="trim-input" min="-8" max="4" step="0.5" value="2">
+                <input type="range" id="trimMax" class="trim-input" min="-8" max="4" step="0.5" value="{{ clip_after }}">
                 
                 <!-- Zero point indicator -->
                 <div class="trim-zero-marker" title="进球瞬间"></div>
@@ -265,24 +265,31 @@
 
 <script>
 const VIDEO_ID = '{{ video_id }}';
+// Clip defaults come from the backend (config.CLIP_BEFORE / CLIP_AFTER) so the preview matches the export
+const DEFAULT_CLIP_BEFORE = {{ clip_before }};
+const DEFAULT_CLIP_AFTER = {{ clip_after }};
 let scores = {{ session.scores | tojson }};
 const SESSION_STATUS = '{{ session.status }}';
 let selectedIds = new Set();
 let stopSnippetTime = 0;
 let currentPlayId = null;
 
+function getClipRange(score) {
+    return {
+        before: score.clip_before !== undefined ? score.clip_before : DEFAULT_CLIP_BEFORE,
+        after: score.clip_after !== undefined ? score.clip_after : DEFAULT_CLIP_AFTER
+    };
+}
+
 function playSnippet(id) {
     const score = scores.find(s => s.id === id);
     if (!score) return;
     
     currentPlayId = id;
-    let clipBefore = 4;
-    let clipAfter = 2;
-    if (score.clip_before !== undefined) clipBefore = score.clip_before;
-    if (score.clip_after !== undefined) clipAfter = score.clip_after;
+    const range = getClipRange(score);
     
-    document.getElementById('trimMin').value = -clipBefore;
-    document.getElementById('trimMax').value = clipAfter;
+    document.getElementById('trimMin').value = -range.before;
+    document.getElementById('trimMax').value = range.after;
     updateTrimUI();
     
     replaySnippet();
@@ -294,11 +301,10 @@ function replaySnippet() {
     const score = scores.find(s => s.id === currentPlayId);
     if (!score) return;
     
-    const clipBefore = score.clip_before || 4;
-    const clipAfter = score.clip_after || 2;
+    const range = getClipRange(score);
     
-    const start = Math.max(0, score.timestamp - clipBefore);
-    const end = score.timestamp + clipAfter;
+    const start = Math.max(0, score.timestamp - range.before);
+    const end = score.timestamp + range.after;
     stopSnippetTime = end;
     
     const player = document.getElementById('snippetPlayer');
