@@ -72,7 +72,7 @@ if [ -f "$NEW_MODEL" ]; then
         # Deploy new model
         cp "$NEW_MODEL" "$TARGET_MODEL"
         echo -e "${GREEN}🚀 部署成功！旧模型已备份为 best.pt.bak。${NC}"
-        echo -e "${GREEN}重启项目后，新模型将生效。${NC}"
+        echo -e "${GREEN}新模型会在下一次检测时自动加载，无需重启。${NC}"
     else
         echo -e "已跳过自动部署。您可以稍后手动替换模型。"
     fi

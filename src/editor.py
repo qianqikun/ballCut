@@ -148,6 +148,7 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
 
     for player, p_scores in player_scores.items():
         clip_paths = []
+        clip_scores = []  # score for each entry in clip_paths (failed clips are skipped)
 
         for i, score in enumerate(p_scores):
             cb = score.get('clip_before', clip_before)
@@ -161,6 +162,7 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             try:
                 clip_video(video_path, clip_path, start, end)
                 clip_paths.append(clip_path)
+                clip_scores.append(score)
             except Exception as e:
                 logger.error(f"Failed to clip {score['timestamp_str']}: {e}")
 
@@ -182,7 +184,7 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
             import shutil
             for i, cp in enumerate(clip_paths):
                 # Format: Player_01_00-12-30.mp4
-                time_str = p_scores[i]['timestamp_str'].replace(':', '-')
+                time_str = clip_scores[i]['timestamp_str'].replace(':', '-')
                 shot_filename = f"{safe_name}_{i+1:03d}_{time_str}.mp4"
                 shot_path = os.path.join(player_dir, shot_filename)
                 
