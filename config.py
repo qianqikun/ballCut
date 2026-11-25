@@ -19,5 +19,5 @@ CLIP_BEFORE = 5.0       # Seconds before score to include in clip
 CLIP_AFTER = 3.0        # Seconds after score to include in clip
 
 # Flask settings
-MAX_CONTENT_LENGTH = 10 * 1024 * 1024 * 1024  # 10 GB
+MAX_CONTENT_LENGTH = None  # Upload size limit in bytes; None = no limit (e.g. 10 * 1024 * 1024 * 1024 for 10 GB)
 SECRET_KEY = 'ballcut-secret-key-change-me'

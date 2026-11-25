@@ -7,6 +7,7 @@ import numpy as np
 import os
 import math
 import logging
+import shutil
 import threading
 import torch
 from ultralytics import YOLO
@@ -49,6 +50,10 @@ def get_device():
     # Use mps on apple silicon for performance
     elif torch.backends.mps.is_available():
         return 'mps'
+    if shutil.which('nvidia-smi'):
+        # The torch that pip installs by default on Windows / Linux has no CUDA support
+        logger.warning("An NVIDIA GPU is present but this PyTorch build has no CUDA support: "
+                       "detection runs on the CPU. Install a CUDA build of torch to use the GPU.")
     return 'cpu'
 
 

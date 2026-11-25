@@ -34,4 +34,10 @@ python start.py
 -   **FFmpeg**: 必需 (用于视频剪辑)
     -   Windows 用户请确保将 `ffmpeg.exe` 路径添加至系统环境变量。
 -   **GPU (可选)**：支持 CUDA 可显著提升 AI 检测速度。
+    -   **NVIDIA 显卡（Windows / Linux）**：`pip install torch` 默认装的是**不支持 CUDA** 的版本，检测只会用 CPU。需要手动安装带 CUDA 的版本：
+        ```bash
+        pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu128
+        ```
+        RTX 50 系需要 CUDA 12.8 及以上。适合你机器的命令以 [PyTorch 官网](https://pytorch.org/get-started/locally/) 的选择器为准。
+    -   `python start.py` 启动时会自动检查，显卡没被用上时会在控制台给出提示。
 
