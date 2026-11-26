@@ -428,14 +428,63 @@ def concat_videos(clip_paths, output_path, temp_dir):
 
 # ── the highlight videos ───────────────────────────────────────────────────────
 
-def generate_highlights(video_path, scores, output_dir, temp_dir,
-                        clip_before=5.0, clip_after=3.0, progress_callback=None, mode='lossless'):
+UNLABELLED = '未标注'
+GOAL, ASSIST = 'goal', 'assist'
+ROLE_IN_FILENAME = {GOAL: '进球', ASSIST: '助攻'}
+
+# Until 2026-11-26 the defaults were 5 s before and 3 s after, and the review page saved exactly
+# that pair with every score whose clip was opened. Such a pair follows the defaults: it was not
+# set by hand.
+DEFAULTS_SET_BEFORE = (5.0, 3.0)
+
+
+def clean_name(value):
+    """A name as it is compared and shown: nothing around it, single spaces inside."""
+    if value is None:
+        return ''
+    return ' '.join(str(value).split())
+
+
+def participants(score):
+    """Who is in the clip of one score and how: [(name, 'goal' or 'assist')], the scorer first.
+
+    An assist named twice, or who is the scorer as well, counts once, as the scorer.
     """
-    Generate highlight videos grouped by player.
+    scorer = clean_name(score.get('player'))
+    found = [(scorer, GOAL)] if scorer else []
+    assists = score.get('assists')
+    for value in assists if isinstance(assists, list) else []:
+        name = clean_name(value)
+        if name and all(name != other for other, _ in found):
+            found.append((name, ASSIST))
+    return found
+
+
+def clip_range(score, clip_before, clip_after):
+    """(seconds before, seconds after) the clip of one score reaches: its own, or the defaults."""
+    try:
+        saved = (float(score['clip_before']), float(score['clip_after']))
+    except (KeyError, TypeError, ValueError):
+        return clip_before, clip_after
+    if score.get('clip_custom') or saved != DEFAULTS_SET_BEFORE:
+        return saved
+    return clip_before, clip_after
+
+
+def file_name(name):
+    """A name as the name of a file or a folder: letters and digits (Chinese included), '_', '-', ' '."""
+    safe = ''.join(c for c in name if c.isalnum() or c in ('_', '-', ' '))
+    return safe.strip() or 'unknown'
+
+
+def generate_highlights(video_path, scores, output_dir, temp_dir,
+                        clip_before=6.0, clip_after=2.0, progress_callback=None, mode='lossless'):
+    """
+    Generate one highlight video per person: the makes they scored and the ones they assisted.
 
     Args:
         video_path: path to source video
-        scores: list of confirmed score dicts with 'player' and 'timestamp'
+        scores: score dicts with 'player', 'assists' (a list of names), 'timestamp' and 'confirmed'
         output_dir: directory to save highlight videos
         temp_dir: directory for temporary clip files
         clip_before: seconds before scoring moment
@@ -444,115 +493,119 @@ def generate_highlights(video_path, scores, output_dir, temp_dir,
         mode: 'lossless' (clips are copied, see the top of this file) or 'precise' (encoded again)
 
     Returns:
-        (dict mapping player_name -> info about its highlight video, dict about how it was exported)
+        (dict mapping person -> info about its highlight video, dict about how it was exported)
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Group scores by player
-    player_scores = {}
-    for score in scores:
+    # Which clips are needed, in video order, and who is in each of them. A clip that is one
+    # person's goal and another person's assist is made once and goes into both highlights.
+    clips = []      # [(score, [(name, role), ...])]
+    member = {}     # name -> [(number of the clip, role)]
+    for score in sorted(scores, key=lambda s: s.get('timestamp', 0)):
         if not score.get('confirmed', True):
             continue
-        player = score.get('player', '').strip()
-        if not player:
-            player = '未标注'
-        if player not in player_scores:
-            player_scores[player] = []
-        player_scores[player].append(score)
+        who = participants(score) or [(UNLABELLED, GOAL)]
+        for name, role in who:
+            member.setdefault(name, []).append((len(clips), role))
+        clips.append((score, who))
 
-    # Sort each player's scores by timestamp
-    for player in player_scores:
-        player_scores[player].sort(key=lambda s: s['timestamp'])
-
-    total_clips = sum(len(v) for v in player_scores.values())
-    clips_done = 0
     results = {}
     # How the clips were made, for the page that offers the downloads
     export = {'mode': mode if mode in EXPORT_MODES else 'lossless', 'encoder': None,
               'start_shift': 0.0, 'clips': 0}
     choice = {}
+    paths = [os.path.join(temp_dir, f"clip_{i:04d}.mp4") for i in range(len(clips))]
+    made = [None] * len(clips)    # the clip files that were made; None where it failed
 
-    for player, p_scores in player_scores.items():
-        clip_paths = []
-        clip_scores = []  # score for each entry in clip_paths (failed clips are skipped)
+    for i, (score, _) in enumerate(clips):
+        before, after = clip_range(score, clip_before, clip_after)
+        start = max(0, score['timestamp'] - before)
+        # Not cut at the length reported for the video: it is an estimate, and past the real end
+        # ffmpeg simply stops
+        end = score['timestamp'] + after
 
-        for i, score in enumerate(p_scores):
-            cb = score.get('clip_before', clip_before)
-            ca = score.get('clip_after', clip_after)
-            start = max(0, score['timestamp'] - cb)
-            # Not cut at the length reported for the video: it is an estimate, and past the real end
-            # ffmpeg simply stops
-            end = score['timestamp'] + ca
+        try:
+            if export['mode'] == 'precise':
+                used = clip_precise(video_path, paths[i], start, end, choice)
+                export['encoder'] = used['label']
+            else:
+                cut = clip_lossless(video_path, paths[i], start, end)
+                export['start_shift'] = max(export['start_shift'], round(start - cut, 2))
+            made[i] = paths[i]
+            export['clips'] += 1
+        except Exception as e:
+            logger.error(f"Failed to clip {score.get('timestamp_str', score['timestamp'])}: {e}")
 
-            clip_filename = f"clip_{clips_done:04d}.mp4"
-            clip_path = os.path.join(temp_dir, clip_filename)
+        if progress_callback:
+            progress_callback((i + 1) / max(1, len(clips)))
 
-            try:
-                if export['mode'] == 'precise':
-                    used = clip_precise(video_path, clip_path, start, end, choice)
-                    export['encoder'] = used['label']
-                else:
-                    cut = clip_lossless(video_path, clip_path, start, end)
-                    export['start_shift'] = max(export['start_shift'], round(start - cut, 2))
-                clip_paths.append(clip_path)
-                clip_scores.append(score)
-                export['clips'] += 1
-            except Exception as e:
-                logger.error(f"Failed to clip {score.get('timestamp_str', score['timestamp'])}: {e}")
+    # The people by how many clips they are in; the makes that nobody was named in last
+    people = sorted(member, key=lambda name: (name == UNLABELLED, -len(member[name])))
+    folders = set()
+    for name in people:
+        entries = [(i, role) for i, role in member[name] if made[i] is not None]
+        if not entries:
+            continue
+        # Names that are alike as folder names ("A·B" and "AB") get their own: the clips of the one
+        # would be taken for the earlier clips of the other and removed
+        safe_name = file_name(name)
+        folder, n = safe_name, 2
+        while folder.lower() in folders:
+            folder, n = f"{safe_name}_{n}", n + 1
+        folders.add(folder.lower())
 
-            clips_done += 1
-            if progress_callback:
-                progress_callback(clips_done / total_clips)
+        # Create a directory for individual clips
+        person_dir = os.path.join(output_dir, folder)
+        os.makedirs(person_dir, exist_ok=True)
 
-        if clip_paths:
-            # Sanitize player name for folder/filename (allow alphanumeric including Chinese)
-            safe_name = "".join(c for c in player if (c.isalnum() or c in ('_', '-', ' ')))
-            safe_name = safe_name.strip() or 'unknown'
-
-            # Create a directory for individual clips
-            player_dir = os.path.join(output_dir, safe_name)
-            os.makedirs(player_dir, exist_ok=True)
-
-            # The clips of an earlier generation: their numbering is not valid any more, and some of
-            # them may not belong to the shots of this generation (found later, or rejected since)
-            for old in os.listdir(player_dir):
-                if old.startswith(safe_name + '_') and old.endswith('.mp4'):
-                    try:
-                        os.remove(os.path.join(player_dir, old))
-                    except OSError as e:
-                        logger.warning(f"Could not remove old clip {old}: {e}")
-
-            # Move/Copy clips to player directory with descriptive names
-            for i, cp in enumerate(clip_paths):
-                # Format: Player_01_00-12-30.mp4
-                time_str = clip_scores[i]['timestamp_str'].replace(':', '-')
-                shot_filename = f"{safe_name}_{i+1:03d}_{time_str}.mp4"
-                shot_path = os.path.join(player_dir, shot_filename)
-
+        # The clips of an earlier generation: their numbering is not valid any more, and some of
+        # them may not belong to the shots of this generation (found later, rejected since)
+        for old in os.listdir(person_dir):
+            if old.startswith(folder + '_') and old.endswith('.mp4'):
                 try:
-                    shutil.copy2(cp, shot_path)
-                except Exception as e:
-                    logger.error(f"Failed to save individual shot {shot_filename}: {e}")
+                    os.remove(os.path.join(person_dir, old))
+                except OSError as e:
+                    logger.warning(f"Could not remove old clip {old}: {e}")
 
-            output_filename = f"highlight_{safe_name}.mp4"
-            output_path = os.path.join(output_dir, output_filename)
+        # Copy clips to the person's directory with descriptive names
+        clip_paths = []
+        goals = 0
+        for i, (number, role) in enumerate(entries):
+            goals += role == GOAL
+            # Format: Player_001_进球_00-12-30.mp4
+            time_str = clips[number][0]['timestamp_str'].replace(':', '-')
+            shot_filename = f"{folder}_{i+1:03d}_{ROLE_IN_FILENAME[role]}_{time_str}.mp4"
+            shot_path = os.path.join(person_dir, shot_filename)
 
             try:
-                concat_videos(clip_paths, output_path, temp_dir)
-                results[player] = {
-                    'path': output_path,
-                    'filename': output_filename,
-                    'count': len(clip_paths),
-                    'folder': safe_name
-                }
+                shutil.copy2(made[number], shot_path)
             except Exception as e:
-                logger.error(f"Failed to concat clips for {player}: {e}")
+                logger.error(f"Failed to save individual shot {shot_filename}: {e}")
+            clip_paths.append(made[number])
 
-            # Cleanup temp clips (we already copied them to player_dir)
-            for cp in clip_paths:
-                if os.path.exists(cp):
-                    os.remove(cp)
+        output_filename = f"highlight_{folder}.mp4"
+        output_path = os.path.join(output_dir, output_filename)
+
+        try:
+            concat_videos(clip_paths, output_path, temp_dir)
+            results[name] = {
+                'path': output_path,
+                'filename': output_filename,
+                'count': len(entries),
+                'goals': goals,
+                'assists': len(entries) - goals,
+                'folder': folder
+            }
+        except Exception as e:
+            logger.error(f"Failed to concat clips for {name}: {e}")
+
+    # Cleanup temp clips (the persons' directories have their copies), those of failed clips too
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     # What an earlier generation left for players that have no clips in this one (all rejected since,
     # or renamed): their folders with the single clips, the ZIPs made from them, and their highlight videos

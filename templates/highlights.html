@@ -4,7 +4,7 @@
 {% block content %}
 <div class="page-header">
     <h1>🎬 集锦已生成</h1>
-    <p class="subtitle">按球员分组的进球集锦已就绪</p>
+    <p class="subtitle">每个人的进球和助攻集锦已就绪</p>
 </div>
 
 {% if session.export_info %}
@@ -28,8 +28,13 @@
     <section class="card highlight-card">
         <div class="highlight-icon">🏀</div>
         <h2 class="highlight-player">{{ player }}</h2>
+        {# Highlights made before assists existed have no counts of their own #}
+        {% set goals = info.goals if info.goals is defined else info.count %}
         <div class="highlight-stats">
-            <span class="stat-badge">{{ info.count }} 个进球</span>
+            <span class="stat-badge">{{ goals }} 个进球</span>
+            {% if info.assists %}
+            <span class="stat-badge">{{ info.assists }} 次助攻</span>
+            {% endif %}
         </div>
         <a href="/api/download/{{ video_id }}/{{ info.filename }}"
            class="btn btn-primary btn-block">

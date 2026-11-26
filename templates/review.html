@@ -6,7 +6,7 @@
     <h1>审核进球</h1>
     <p class="subtitle">
         共检测到 <strong id="totalCount">{{ session.scores|length }}</strong> 个进球，
-        请确认并标注球员姓名
+        请确认进球，标出谁进的球、谁助攻
     </p>
 </div>
 
@@ -55,11 +55,14 @@
                 <button type="button" class="tl-btn" id="tlPrev" title="上一段">上一段</button>
                 <span class="hint-text" id="tlStepLabel"></span>
                 <button type="button" class="tl-btn" id="tlNext" title="下一段">下一段</button>
-                <select id="tlStepLen" class="tl-select" title="“上一段、下一段”每一段的长度">
-                    <option value="300">每段 5 分钟</option>
-                    <option value="600" selected>每段 10 分钟</option>
-                    <option value="1800">每段 30 分钟</option>
-                </select>
+                <!-- How long such a part is: three buttons, not a menu. A menu of the browser does not
+                     take the colours of the page -->
+                <span class="hint-text" title="“上一段、下一段”每一段的长度">每段</span>
+                <span class="tl-step-len" role="group" aria-label="“上一段、下一段”每一段的长度">
+                    <button type="button" class="tl-btn" data-length="300" aria-pressed="false">5 分钟</button>
+                    <button type="button" class="tl-btn" data-length="600" aria-pressed="true">10 分钟</button>
+                    <button type="button" class="tl-btn" data-length="1800" aria-pressed="false">30 分钟</button>
+                </span>
             </div>
         </div>
         <div class="tl-detail" id="tlDetail" title="拖动两端选起止时间，拖动选中的部分整体移动，滚轮缩放">
@@ -191,21 +194,29 @@
 </section>
 {% else %}
 
-<!-- Batch player assignment -->
+<!-- Naming many scores at once: a scorer or an assist for the selected ones. And the names used before -->
 <section class="card">
     <div class="toolbar">
         <div class="toolbar-left">
             <button class="btn btn-sm btn-outline" onclick="selectAll(true)">全选</button>
             <button class="btn btn-sm btn-outline" onclick="selectAll(false)">全不选</button>
+            <label class="batch-filter" title="只显示还没有填进球、也没有填助攻的进球">
+                <input type="checkbox" id="onlyUnlabelled" onchange="setOnlyUnlabelled(this.checked)">
+                只看未标注
+            </label>
+            <span class="hint-text" id="labelProgress"></span>
         </div>
         <div class="toolbar-right">
-            <input type="text" id="batchPlayer" class="input-text input-sm"
-                   placeholder="批量设置球员名">
-            <button class="btn btn-sm btn-secondary" onclick="batchSetPlayer()">
-                应用到选中
-            </button>
+            <span class="batch-role">
+                <label title="把名字填进选中进球的“进球”一栏，替换原来的"><input type="radio" name="batchRole" value="player" checked> 进球</label>
+                <label title="把名字加进选中进球的“助攻”里，已有的不重复"><input type="radio" name="batchRole" value="assists"> 助攻</label>
+            </span>
+            <span class="batch-name" id="batchName"></span>
+            <button class="btn btn-sm btn-secondary" onclick="batchSetName()" title="回车也可以">应用到选中</button>
+            <button class="btn btn-sm btn-outline" onclick="openNamesModal()" id="btnNames">球员名单</button>
         </div>
     </div>
+    <p class="batch-note" id="batchNote"></p>
 </section>
 
 <!-- Score grid -->
@@ -235,11 +246,17 @@
                     <span class="toggle-slider"></span>
                 </label>
             </div>
-            <input type="text" class="input-text input-player"
-                   placeholder="球员姓名"
-                   value="{{ score.player }}"
-                   data-score-id="{{ score.id }}"
-                   onchange="setPlayer({{ score.id }}, this.value)">
+            <!-- Who scored and who assisted: the name fields are made by the page's script -->
+            <div class="score-labels">
+                <div class="score-label-row">
+                    <span class="score-label-role">进球</span>
+                    <span class="score-label-field" data-role="player"></span>
+                </div>
+                <div class="score-label-row">
+                    <span class="score-label-role">助攻</span>
+                    <span class="score-label-field" data-role="assists"></span>
+                </div>
+            </div>
             <div class="score-tags">
                 <button type="button" class="score-tag score-tag-range"
                         onclick="selectGapBefore({{ loop.index0 }})"
@@ -316,37 +333,89 @@
     </div>
 </div>
 
-<!-- Video playback modal -->
+<!-- Watching one clip: who scored, who assisted, where the clip starts and ends, then the next one -->
 <div class="modal-overlay hidden" id="videoModal" style="z-index: 300;" onclick="if(event.target===this) closeVideoModal()">
-    <div class="modal-content" style="max-width: 800px; padding: 1rem; position: relative;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h2 style="margin: 0; font-size: 1.2rem;">回放与剪辑微调</h2>
-            <button class="btn btn-outline btn-sm" onclick="closeVideoModal()">✕</button>
+    <div class="modal-content snippet-modal" role="dialog" aria-label="回放与标注">
+        <div class="snippet-head">
+            <h2>回放与标注</h2>
+            <span class="hint-text" id="snippetPosition"></span>
+            <button class="btn btn-outline btn-sm" onclick="closeVideoModal()" title="关闭 (Esc)">✕</button>
         </div>
-        <video id="snippetPlayer" controls style="width: 100%; max-height: 60vh; border-radius: 8px; background: #000;" playsinline></video>
-        
-        <div style="margin-top: 15px; padding: 15px 20px; background: rgba(0,0,0,0.3); border-radius: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
-                <span style="font-size: 0.9em; color: var(--text-secondary);">进球前起始点: <strong id="modalBeforeVal" style="color:var(--accent)">{{ clip_before }}</strong>s</span>
-                <span style="font-size: 0.9em; color: var(--text-secondary);">进球后结束点: <strong id="modalAfterVal" style="color:var(--accent)">{{ clip_after }}</strong>s</span>
+        <!-- What sits between the title and the buttons. The window is as high as the page allows
+             (the script makes the video give way); only when that is not enough this part scrolls -->
+        <div class="snippet-middle">
+        <div class="snippet-body" id="snippetBody">
+        <video id="snippetPlayer" controls playsinline></video>
+
+        <!-- The names used in this video and before are buttons (made by the script); the field at the
+             end of a row takes the others -->
+        <div class="snippet-labels">
+            <div class="snippet-label-row">
+                <span class="score-label-role">进球</span>
+                <div class="snippet-picks" id="snippetScorers"></div>
             </div>
-            
+            <div class="snippet-label-row">
+                <span class="score-label-role">助攻</span>
+                <div class="snippet-picks snippet-picks-assist" id="snippetAssists"></div>
+            </div>
+        </div>
+
+        <div class="snippet-trim">
+            <div class="trim-values">
+                <span>片段起点: <strong id="modalBeforeVal">{{ clip_before }}</strong>s</span>
+                <span>片段终点: <strong id="modalAfterVal">{{ clip_after }}</strong>s</span>
+            </div>
             <div class="trim-control">
                 <div class="trim-track"></div>
                 <div class="trim-selection" id="trimSelection"></div>
-                
-                <!-- min controls start time (-8 to +4) -->
-                <input type="range" id="trimMin" class="trim-input" min="-8" max="4" step="0.5" value="-{{ clip_before }}">
-                <!-- max controls end time (-8 to +4) -->
-                <input type="range" id="trimMax" class="trim-input" min="-8" max="4" step="0.5" value="{{ clip_after }}">
-                
-                <!-- Zero point indicator -->
+                <!-- One handle for where the clip starts (how many seconds before the make: negative
+                     here, up to the make), one for where it ends (after the make). They lie on the
+                     same scale, so the track reads as one and the clip always has the make in it -->
+                <input type="range" id="trimMin" class="trim-input" min="-15" max="0" step="0.5" value="-{{ clip_before }}"
+                       aria-label="片段起点：进球前多少秒">
+                <input type="range" id="trimMax" class="trim-input" min="0" max="4" step="0.5" value="{{ clip_after }}"
+                       aria-label="片段终点：进球后多少秒">
                 <div class="trim-zero-marker" title="进球瞬间"></div>
             </div>
-            
-            <div style="text-align: center; margin-top: 25px;">
-                <button class="btn btn-sm btn-primary" onclick="replaySnippet()">重新播放截取段</button>
+            <div class="trim-scale">
+                <span>15 秒前</span>
+                <span class="trim-scale-zero" id="trimZeroLabel">进球</span>
+                <span>4 秒后</span>
             </div>
+        </div>
+        </div>
+        <!-- No scrollbar is shown when this part scrolls; a shade says that there is more -->
+        <div class="snippet-shade snippet-shade-above" aria-hidden="true"></div>
+        <div class="snippet-shade snippet-shade-below" aria-hidden="true"></div>
+        </div>
+
+        <div class="snippet-nav">
+            <button class="btn btn-outline btn-sm" id="btnPrevSnippet" onclick="snippetStep(-1)" title="上一个 (←)">‹ 上一个</button>
+            <button class="btn btn-outline btn-sm" id="btnSnippetReject" onclick="rejectSnippet()">✕ 这不是进球</button>
+            <button class="btn btn-outline btn-sm" onclick="replaySnippet()" title="重播这一段 (空格)">▶ 重播</button>
+            <button class="btn btn-primary" id="btnNextSnippet" onclick="snippetStep(1)" title="下一个 (回车)">下一个 <kbd>回车</kbd></button>
+        </div>
+    </div>
+</div>
+
+<!-- The names used before: buttons while naming, instead of typing. New names join by themselves;
+     this is where mistakes are removed and a whole team can be put in at once -->
+<div class="modal-overlay hidden" id="namesModal" style="z-index: 300;" onclick="if(event.target===this) closeNamesModal()">
+    <div class="modal-content names-modal" role="dialog" aria-label="球员名单">
+        <div class="snippet-head">
+            <h2>球员名单</h2>
+            <button class="btn btn-outline btn-sm" onclick="closeNamesModal()" title="关闭 (Esc)">✕</button>
+        </div>
+        <p class="step-desc">
+            标注进球和助攻时，名单里的名字是按钮，点一下就行。标注时输入的新名字会自动加进来。
+            从名单里删掉一个名字，不影响已经标好的视频。
+        </p>
+        <div class="names-list" id="namesList"></div>
+        <textarea id="namesAdd" class="input-text" rows="2" autocomplete="off"
+                  placeholder="添加名字，一次可以写多个：用逗号或换行分隔"></textarea>
+        <div class="names-modal-buttons">
+            <button class="btn btn-outline" onclick="closeNamesModal()">完成</button>
+            <button class="btn btn-primary" onclick="addNames()">添加到名单</button>
         </div>
     </div>
 </div>
@@ -355,6 +424,7 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/hoop-picker.js') }}"></script>
+<script src="{{ url_for('static', filename='js/name-picker.js') }}"></script>
 <style>
 /* Under the player name of a score: the way to detect the part before it again, and where the score
    came from (a detection of one part, one not found again since). In the info area, not over the
@@ -512,6 +582,379 @@
     transform: scale(1);
 }
 
+/* ── Who scored, who assisted: the two name fields on a score card ── */
+.score-labels {
+    display: grid;
+    gap: 0.3rem;
+    margin-top: 0.6rem;
+}
+
+.score-label-row {
+    display: grid;
+    grid-template-columns: 2.6em 1fr;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.score-label-role {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.score-label-field {
+    display: block;
+    min-width: 0;
+}
+
+/* "只看未标注": the scores that have a scorer or an assist are not shown */
+.score-grid.only-unlabelled .score-card:not(.score-unlabelled) {
+    display: none;
+}
+
+.batch-filter {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.batch-filter input {
+    accent-color: var(--accent);
+}
+
+/* Scorers or assists: what the name is set as on the selected scores */
+.batch-role {
+    display: inline-flex;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.batch-role label {
+    padding: 0.35rem 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.batch-role label:has(input:checked) {
+    background: var(--bg-card-hover);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.batch-role label:has(input:focus-visible) {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.batch-role input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+}
+
+.batch-name {
+    display: block;
+    width: 200px;
+}
+
+.batch-note {
+    margin: 0.5rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.batch-note:empty {
+    display: none;
+}
+
+/* ── The playback window and the window with the list of names ── */
+.snippet-modal, .names-modal {
+    max-width: 900px;
+    width: 94%;
+    max-height: calc(100vh - 1.5rem);    /* as high as the page, with a little air above and below */
+    text-align: left;
+}
+
+/* What does not fit in these windows scrolls, without a scrollbar being shown (the playback
+   window first makes the video smaller, see fitSnippetWindow) */
+.names-modal, .snippet-body {
+    overflow-y: auto;
+    scrollbar-width: none;
+    overscroll-behavior: contain;
+}
+
+.names-modal::-webkit-scrollbar, .snippet-body::-webkit-scrollbar {
+    display: none;
+}
+
+.names-modal {
+    max-width: 580px;
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+/* The title on top, the buttons underneath, and in between what may have to scroll */
+.snippet-modal {
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem 1.25rem 1rem;
+    overflow: hidden;
+}
+
+.snippet-middle {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.snippet-body {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Shades over the top and the bottom edge of that part while there is more beyond them */
+.snippet-shade {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 28px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.snippet-shade-above {
+    top: 0;
+    background: linear-gradient(var(--bg-card), transparent);
+}
+
+.snippet-shade-below {
+    bottom: 0;
+    background: linear-gradient(transparent, var(--bg-card));
+}
+
+.more-above .snippet-shade-above, .more-below .snippet-shade-below {
+    opacity: 1;
+}
+
+.snippet-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.snippet-head h2 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.snippet-head .hint-text {
+    flex: 1;
+}
+
+#snippetPlayer {
+    display: block;
+    width: 100%;
+    margin: 0 auto;     /* narrowed to the height the page leaves (fitSnippetWindow): centred then */
+    border-radius: var(--radius-sm);
+    background: #000;
+}
+
+.snippet-labels {
+    margin-top: 0.75rem;
+    padding: 0.6rem 1rem;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: var(--radius-md);
+}
+
+.snippet-label-row {
+    display: grid;
+    grid-template-columns: 2.6em 1fr;
+    align-items: start;
+    gap: 0.5rem;
+}
+
+.snippet-label-row + .snippet-label-row {
+    margin-top: 0.6rem;
+}
+
+.snippet-label-row .score-label-role {
+    padding-top: 0.35rem;
+    font-size: 0.9rem;
+}
+
+/* The names as buttons; the field for the other names is the last thing in a row */
+.snippet-picks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.snippet-picks .name-field {
+    flex: 0 1 200px;
+    width: 200px;
+}
+
+.name-pill {
+    padding: 0.3rem 0.85rem;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.88rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.name-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.name-pill[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+/* Assists in another colour than the scorer: who does what can be seen at a glance */
+.snippet-picks-assist .name-pill:hover {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.snippet-picks-assist .name-pill[aria-pressed="true"] {
+    background: var(--success);
+    border-color: var(--success);
+    box-shadow: 0 0 10px var(--success-glow);
+}
+
+.snippet-picks-assist .name-pill[aria-pressed="true"]:hover {
+    color: #fff;
+}
+
+.snippet-trim {
+    margin-top: 0.75rem;
+    padding: 0.6rem 1rem 0.5rem;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: var(--radius-md);
+}
+
+.trim-values {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;     /* room for the mark of the make, which stands above the track */
+}
+
+.trim-values span {
+    font-size: 0.9em;
+    color: var(--text-secondary);
+}
+
+.trim-values strong {
+    color: var(--accent);
+}
+
+/* What the ends of the range mean; the mark of the make is placed by the script */
+.trim-scale {
+    position: relative;
+    height: 1.4em;
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+}
+
+.trim-scale span {
+    position: absolute;
+    top: 0;
+    white-space: nowrap;
+}
+
+.trim-scale span:first-child {
+    left: 0;
+}
+
+.trim-scale span:last-child {
+    right: 0;
+}
+
+.trim-scale-zero {
+    transform: translateX(-50%);
+    color: var(--accent);
+    font-weight: 600;
+}
+
+/* The buttons are always at the bottom of the window, however low the page is */
+.snippet-nav {
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.75rem -1.25rem -1rem;    /* across the whole width of the window */
+    padding: 0.5rem 1.25rem 1rem;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-card);
+}
+
+.snippet-nav kbd {
+    padding: 0 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.18);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: inherit;
+}
+
+.names-modal .step-desc {
+    margin-bottom: 1rem;
+}
+
+.names-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    min-height: 2.4rem;
+    margin-bottom: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.names-list .name-chip {
+    font-size: 0.88rem;
+}
+
+.names-modal textarea.input-text {
+    flex: none;
+    width: 100%;
+    padding: 0.6rem 0.9rem;
+    font-family: inherit;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.names-modal-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
 /* Video trimmer styles */
 .trim-control {
     position: relative;
@@ -559,7 +1002,6 @@
 }
 .trim-zero-marker {
     position: absolute; 
-    left: 66.66%; /* 8/12 */
     top: -5px; bottom: -5px; 
     width: 2px; 
     background: var(--accent); 
@@ -781,7 +1223,7 @@ function renderTimeline() {
     }
 
     // "第 n / N 段": where the range begins among the fixed-length parts of the video
-    const length = parseInt(document.getElementById('tlStepLen').value, 10);
+    const length = stepLength;
     const parts = Math.ceil(TL.duration / length);
     const index = range ? Math.min(parts - 1, Math.floor(range.first / length)) : -1;
     document.getElementById('tlStepLabel').textContent = (TL.duration > length && index >= 0)
@@ -927,12 +1369,22 @@ function tlTimeAt(event, bar) {
 document.getElementById('tlZoomIn').addEventListener('click', () => tlZoom(1 / 2));
 document.getElementById('tlZoomOut').addEventListener('click', () => tlZoom(2));
 document.getElementById('tlZoomAll').addEventListener('click', () => tlSetWindow(0, TL.duration));
-document.getElementById('tlStepLen').addEventListener('change', renderTimeline);
+
+// How long the parts of "上一段 / 下一段" are; one of the three buttons is the one pressed
+let stepLength = 600;
+const stepLengthButtons = document.querySelectorAll('.tl-step-len .tl-btn');
+for (const button of stepLengthButtons) {
+    button.addEventListener('click', () => {
+        stepLength = parseInt(button.dataset.length, 10);
+        stepLengthButtons.forEach(other => other.setAttribute('aria-pressed', other === button ? 'true' : 'false'));
+        renderTimeline();
+    });
+}
 
 // "上一段 / 下一段": fixed-length parts of the video, one after the other, so that a long video can be
 // gone through without typing anything
 function tlStep(direction) {
-    const length = parseInt(document.getElementById('tlStepLen').value, 10);
+    const length = stepLength;
     const range = readRange();
     const index = range ? Math.floor((range.first + 0.001) / length) : (direction > 0 ? -1 : 0);
     const next = Math.max(0, Math.min(Math.ceil(TL.duration / length) - 1, index + direction));
@@ -1089,7 +1541,7 @@ async function startRangeDetection() {
     clearError('rangeError');
     const button = document.getElementById('btnDetectRange');
     button.disabled = true;
-    saveScores();  // labels typed on this page that were not sent yet
+    await postScores();  // labels typed on this page that were not sent yet
 
     try {
         const response = await fetch('/api/detect-range', {
@@ -1182,44 +1634,281 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
+// ── Who scored, who assisted ──────────────────────────────────────────────────
+// The names used before, kept on this computer: they are picked instead of typed again
+let NAMES = {{ names | tojson }};
+const PILLS = 12;                   // how many names the playback window shows as buttons
+const labelFields = {};             // score id -> {player, assists}: the name fields on the score's card
+const OLD_CLIP_DEFAULTS = [5, 3];   // what the page saved with a score whose clip was merely opened
+const TRIM = {min: -15, max: 4};    // the scale both handles lie on: from 15 s before the make to 4 s after it
+let onlyUnlabelled = false;
+let namesRequest = 0;               // of two changes to the list of names in a row, the later one counts
+
+for (const score of scores) {
+    score.player = cleanName(score.player);
+    score.assists = Array.isArray(score.assists) ? [...new Set(score.assists.map(cleanName).filter(Boolean))] : [];
+}
+
+function namesForPicker() {
+    // The names of this video first (by how often they are in it), then the others as they are listed
+    const count = {};
+    for (const score of scores) {
+        for (const name of [score.player, ...score.assists]) if (name) count[name] = (count[name] || 0) + 1;
+    }
+    const used = Object.keys(count).sort((a, b) => count[b] - count[a] || a.localeCompare(b, 'zh'));
+    return used.concat(NAMES.filter(name => !(name in count)));
+}
+
+function changeNames(add, remove) {
+    const request = ++namesRequest;
+    return fetch('/api/names', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({add: add || [], remove: remove || []})
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.names && request === namesRequest) NAMES = data.names;
+        return data.names || NAMES;
+    });
+}
+
+// A name that is new on this computer goes into the list, for the next video
+function rememberName(name) {
+    if (!name || NAMES.includes(name)) return;
+    NAMES.unshift(name);
+    changeNames([name]);
+}
+
+function isLabelled(score) {
+    return !!score.player || score.assists.length > 0;
+}
+
+// With "只看未标注" on, the cards that have a name are not shown (and not stepped through)
+function isCardShown(score) {
+    return !onlyUnlabelled || !isLabelled(score);
+}
+
+function labelsChanged(score) {
+    // The card, the playback window and the counts all show the names as they are now
+    document.getElementById(`score-${score.id}`).classList.toggle('score-unlabelled', !isLabelled(score));
+    if (score.id === currentPlayId) renderSnippetLabels();
+    updateLabelProgress();
+    saveScores();
+}
+
+// The one place where names are set: from a card, from the playback window, or for many scores
+function setScorer(score, name) {
+    name = cleanName(name);
+    if (score.player === name) return;
+    score.player = name;
+    rememberName(name);
+    labelFields[score.id].player.setValue(name);
+    labelsChanged(score);
+}
+
+function setAssists(score, names) {
+    const next = [...new Set(names.map(cleanName).filter(Boolean))];
+    if (next.length === score.assists.length && next.every((name, i) => name === score.assists[i])) return;
+    score.assists = next;
+    next.forEach(rememberName);
+    labelFields[score.id].assists.setValue(next);
+    labelsChanged(score);
+}
+
+function makeLabelFields(score) {
+    const slots = document.querySelectorAll(`#score-${score.id} .score-label-field`);
+    const player = createNamePicker({
+        placeholder: '选择或输入姓名',
+        names: namesForPicker,
+        advanceOnPick: true,     // Enter once a name is taken: on to the assists of the same score
+        onChange: value => setScorer(score, value),
+        onEnter: () => focusLabelField(score, 'assists')
+    });
+    const assists = createNamePicker({
+        multiple: true,
+        placeholder: '＋ 助攻',
+        names: namesForPicker,
+        exclude: name => name === score.player || score.assists.includes(name),
+        onChange: value => setAssists(score, value),
+        onEnter: () => focusNextLabel(score)     // Enter with nothing to take: on to the next score
+    });
+    player.setValue(score.player);
+    assists.setValue(score.assists);
+    slots[0].appendChild(player.el);
+    slots[1].appendChild(assists.el);
+    labelFields[score.id] = {player, assists};
+}
+
+function focusLabelField(score, role) {
+    const field = labelFields[score.id] && labelFields[score.id][role];
+    if (!field) return;
+    field.el.scrollIntoView({block: 'center'});
+    field.focus();
+}
+
+function focusNextLabel(score) {
+    for (let index = scores.indexOf(score) + 1; index < scores.length; index++) {
+        if (isCardShown(scores[index])) return focusLabelField(scores[index], 'player');
+    }
+}
+
+function updateLabelProgress() {
+    document.getElementById('labelProgress').textContent =
+        `已标注 ${scores.filter(isLabelled).length} / ${scores.length}`;
+}
+
+function setOnlyUnlabelled(on) {
+    onlyUnlabelled = on;
+    document.getElementById('scoreGrid').classList.toggle('only-unlabelled', on);
+}
+
+// ── The playback window: watch a clip, name who scored and who assisted, on to the next ────────
+let snippetScorer = null, snippetAssists = null;   // its fields for names that are not among the buttons
+
+function currentScore() {
+    return scores.find(s => s.id === currentPlayId) || null;
+}
+
 function getClipRange(score) {
-    return {
-        before: score.clip_before !== undefined ? score.clip_before : DEFAULT_CLIP_BEFORE,
-        after: score.clip_after !== undefined ? score.clip_after : DEFAULT_CLIP_AFTER
-    };
+    // A score whose clip was only opened in this window used to get the defaults of that time saved
+    // with it; such a pair follows the defaults again (the export reads them the same way: clip_range)
+    const before = score.clip_before, after = score.clip_after;
+    if (before === undefined || after === undefined
+            || (!score.clip_custom && before === OLD_CLIP_DEFAULTS[0] && after === OLD_CLIP_DEFAULTS[1])) {
+        return {before: DEFAULT_CLIP_BEFORE, after: DEFAULT_CLIP_AFTER};
+    }
+    return {before, after};
 }
 
 function playSnippet(id) {
-    const score = scores.find(s => s.id === id);
+    openSnippet(scores.findIndex(s => s.id === id));
+}
+
+function openSnippet(index) {
+    const score = scores[index];
     if (!score) return;
-    
-    currentPlayId = id;
-    const range = getClipRange(score);
-    
-    document.getElementById('trimMin').value = -range.before;
-    document.getElementById('trimMax').value = range.after;
-    updateTrimUI();
-    
+    currentPlayId = score.id;
+    document.getElementById('snippetPosition').textContent = `第 ${index + 1} / ${scores.length} 个`;
+    document.getElementById('snippetBody').scrollTop = 0;     // the next clip starts at the top
+    renderSnippetLabels();
+    renderSnippetTrim();
+    updateSnippetButtons();
     replaySnippet();
     document.getElementById('videoModal').classList.remove('hidden');
+    fitSnippetWindow();
+}
+
+// The window takes the height of the page. The video gives way for that (narrower, in the same
+// shape) until everything fits; only when it cannot give any more, or the page is very low, does
+// what is between the title and the buttons scroll.
+const LEAST_VIDEO_HEIGHT = 220;    // below this the picture is too small to judge a make by
+
+function fitSnippetWindow() {
+    if (document.getElementById('videoModal').classList.contains('hidden')) return;
+    const modal = document.querySelector('.snippet-modal');
+    const player = document.getElementById('snippetPlayer');
+    // Measured with nothing held back
+    modal.style.maxHeight = 'none';
+    player.style.maxHeight = '';
+    player.style.maxWidth = '';
+    const full = player.getBoundingClientRect().height;
+    const around = modal.getBoundingClientRect().height - full;    // all that is not the video
+    modal.style.maxHeight = '';
+
+    const room = window.innerHeight - 24;        // the air the window keeps above and below
+    const height = Math.floor(Math.max(LEAST_VIDEO_HEIGHT, Math.min(full, room - around)));
+    player.style.maxHeight = height + 'px';
+    // The same shape: the picture gets narrower, not pillar-boxed
+    player.style.maxWidth = Math.floor(height * FRAME.width / FRAME.height) + 'px';
+    updateSnippetShades();
+}
+
+// Without a scrollbar, a shade says that there is more above or below
+function updateSnippetShades() {
+    const body = document.getElementById('snippetBody');
+    const middle = document.querySelector('.snippet-middle');
+    middle.classList.toggle('more-above', body.scrollTop > 1);
+    middle.classList.toggle('more-below', body.scrollTop + body.clientHeight < body.scrollHeight - 1);
+}
+
+// The next score in that direction whose card is shown; null when there is none
+function neighbouringSnippet(direction) {
+    for (let index = scores.indexOf(currentScore()) + direction; index >= 0 && index < scores.length; index += direction) {
+        if (isCardShown(scores[index])) return index;
+    }
+    return null;
+}
+
+function snippetStep(direction) {
+    const index = neighbouringSnippet(direction);
+    if (index !== null) openSnippet(index);
+}
+
+function updateSnippetButtons() {
+    document.getElementById('btnPrevSnippet').disabled = neighbouringSnippet(-1) === null;
+    document.getElementById('btnNextSnippet').disabled = neighbouringSnippet(1) === null;
+    const rejected = !currentScore().confirmed;
+    const button = document.getElementById('btnSnippetReject');
+    button.textContent = rejected ? '✓ 恢复为进球' : '✕ 这不是进球';
+    button.title = rejected ? '这个进球的确认被取消了，点一下恢复' : '取消这个进球的确认，直接看下一个';
+}
+
+function rejectSnippet() {
+    const score = currentScore();
+    toggleConfirm(score.id, !score.confirmed);
+    if (!score.confirmed) snippetStep(1);
+}
+
+function renderSnippetLabels() {
+    const score = currentScore();
+    if (!score) return;
+    // A name that is chosen but not among the buttons follows them: everything chosen can be un-chosen
+    const top = namesForPicker().slice(0, PILLS);
+    const scorerNames = score.player && !top.includes(score.player) ? [...top, score.player] : top;
+    const assistTop = top.filter(name => name !== score.player);     // the scorer is no assist of the same make
+    const assistNames = assistTop.concat(score.assists.filter(name => !assistTop.includes(name)));
+    renderPills(document.getElementById('snippetScorers'), scorerNames, name => score.player === name,
+                name => setScorer(score, score.player === name ? '' : name));
+    renderPills(document.getElementById('snippetAssists'), assistNames, name => score.assists.includes(name),
+                name => setAssists(score, score.assists.includes(name)
+                                             ? score.assists.filter(other => other !== name)
+                                             : [...score.assists, name]));
+    fitSnippetWindow();     // the buttons may take another line now
+}
+
+function renderPills(container, names, isChosen, onPick) {
+    container.querySelectorAll('.name-pill').forEach(pill => pill.remove());
+    for (const name of names) {
+        const pill = document.createElement('button');
+        pill.type = 'button';
+        pill.className = 'name-pill';
+        pill.textContent = name;
+        pill.setAttribute('aria-pressed', isChosen(name) ? 'true' : 'false');
+        // After the click the keyboard belongs to the window again: Enter, space and the arrows
+        pill.addEventListener('click', () => {
+            onPick(name);
+            pill.blur();
+        });
+        container.insertBefore(pill, container.lastElementChild);    // the name field stays the last
+    }
 }
 
 function replaySnippet() {
-    if (currentPlayId === null) return;
-    const score = scores.find(s => s.id === currentPlayId);
+    const score = currentScore();
     if (!score) return;
-    
+
     const range = getClipRange(score);
-    
+
     const start = Math.max(0, score.timestamp - range.before);
     const end = score.timestamp + range.after;
     stopSnippetTime = end;
-    
+
     const player = document.getElementById('snippetPlayer');
     // Force reload by removing and re-setting src
     player.src = `/api/video/${VIDEO_ID}#t=${start},${end}`;
     player.play();
-    
+
     player.ontimeupdate = function() {
         if (player.currentTime >= stopSnippetTime) {
             player.pause();
@@ -1227,57 +1916,164 @@ function replaySnippet() {
     };
 }
 
-function updateTrimUI() {
-    let minInput = document.getElementById('trimMin');
-    let maxInput = document.getElementById('trimMax');
-    
-    let minVal = parseFloat(minInput.value);
-    let maxVal = parseFloat(maxInput.value);
-    
-    // Prevent crossing
-    if (minVal > maxVal - 0.5) {
-        minVal = maxVal - 0.5;
-        minInput.value = minVal;
-    }
-    
-    // Calculate UI percentages (range is -8 to 4, total 12)
-    const leftPct = ((minVal + 8) / 12) * 100;
-    const rightPct = ((maxVal + 8) / 12) * 100;
-    const widthPct = rightPct - leftPct;
-    
-    const sel = document.getElementById('trimSelection');
-    sel.style.left = leftPct + '%';
-    sel.style.width = widthPct + '%';
-    
-    const cb = -minVal;
-    const ca = maxVal;
-    
-    document.getElementById('modalBeforeVal').innerText = cb.toFixed(1);
-    document.getElementById('modalAfterVal').innerText = ca.toFixed(1);
-    
-    if (currentPlayId !== null) {
-        const score = scores.find(s => s.id === currentPlayId);
-        if (score) {
-            score.clip_before = cb;
-            score.clip_after = ca;
-            saveScores();
-        }
-    }
+// What the two handles show for the score in the window; nothing is saved by it
+function renderSnippetTrim() {
+    const range = getClipRange(currentScore());
+    document.getElementById('trimMin').value = -range.before;
+    document.getElementById('trimMax').value = range.after;
+    paintTrim();
+    // A handle cannot show a value outside its own range (one set before the handles were kept
+    // apart): the numbers stay what is saved, until a handle is moved
+    document.getElementById('modalBeforeVal').innerText = range.before.toFixed(1);
+    document.getElementById('modalAfterVal').innerText = range.after.toFixed(1);
 }
 
-// Bind events
-document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('trimMin').addEventListener('input', updateTrimUI);
-    document.getElementById('trimMax').addEventListener('input', updateTrimUI);
-});
+function paintTrim() {
+    const minVal = parseFloat(document.getElementById('trimMin').value);
+    const maxVal = parseFloat(document.getElementById('trimMax').value);
+    // Where the two ends are on the range the handles cover
+    const leftPct = ((minVal - TRIM.min) / (TRIM.max - TRIM.min)) * 100;
+    const rightPct = ((maxVal - TRIM.min) / (TRIM.max - TRIM.min)) * 100;
+
+    const sel = document.getElementById('trimSelection');
+    sel.style.left = leftPct + '%';
+    sel.style.width = (rightPct - leftPct) + '%';
+
+    document.getElementById('modalBeforeVal').innerText = (-minVal).toFixed(1);
+    document.getElementById('modalAfterVal').innerText = maxVal.toFixed(1);
+}
+
+// A handle was moved: the clip of this score has its own range from now on
+// A handle was moved: the clip of this score has its own range from now on. The handles cannot
+// cross: one covers the time before the make, the other the time after it
+function onTrimInput() {
+    const minInput = document.getElementById('trimMin');
+    const maxInput = document.getElementById('trimMax');
+    const score = currentScore();
+    if (!score) return;
+    score.clip_before = -parseFloat(minInput.value);
+    score.clip_after = parseFloat(maxInput.value);
+    score.clip_custom = true;     // set by hand: it does not follow the defaults any more
+    paintTrim();
+    saveScores();
+}
 
 function closeVideoModal() {
+    // Typed but not confirmed when the window is closed with Escape. Before the window goes away:
+    // hiding what has the focus may be reported as the field being left, which would take the text
+    snippetScorer.discard();
+    snippetAssists.discard();
     document.getElementById('videoModal').classList.add('hidden');
     const player = document.getElementById('snippetPlayer');
     player.pause();
     player.removeAttribute('src'); // free memory
     currentPlayId = null;
 }
+
+// In the playback window the keyboard goes from one clip to the next, unless it is being used to type
+// a name or to move a handle
+document.addEventListener('keydown', event => {
+    const namesOpen = !document.getElementById('namesModal').classList.contains('hidden');
+    if (document.getElementById('videoModal').classList.contains('hidden') && !namesOpen) return;
+    if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === 'Escape') {
+        // A list of names under a field closes first (the field keeps the key to itself then)
+        if (namesOpen) closeNamesModal(); else closeVideoModal();
+        return;
+    }
+    if (namesOpen) return;
+    const on = event.target;
+    if (/INPUT|TEXTAREA|SELECT/.test(on.tagName) && on.type !== 'range') return;
+    // A button is pressed with Enter or space, a handle moved with the arrows: that is what those do
+    if (on.tagName === 'BUTTON' && (event.key === 'Enter' || event.key === ' ')) return;
+    if (on.type === 'range' && event.key.startsWith('Arrow')) return;
+    if (event.key === 'Enter' || event.key === 'ArrowRight') {
+        event.preventDefault();
+        snippetStep(1);
+    } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        snippetStep(-1);
+    } else if (event.key === ' ') {
+        event.preventDefault();
+        replaySnippet();
+    }
+});
+
+// ── The list of names ─────────────────────────────────────────────────────────
+
+function openNamesModal() {
+    renderNamesList();
+    document.getElementById('namesModal').classList.remove('hidden');
+}
+
+function closeNamesModal() {
+    document.getElementById('namesModal').classList.add('hidden');
+}
+
+function renderNamesList() {
+    const list = document.getElementById('namesList');
+    list.innerHTML = '';
+    if (!NAMES.length) {
+        list.textContent = '名单还是空的。标注时输入过的名字会自动加进来。';
+        return;
+    }
+    for (const name of NAMES) {
+        const chip = document.createElement('span');
+        chip.className = 'name-chip';
+        chip.textContent = name;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'name-chip-remove';
+        remove.textContent = '×';
+        remove.title = `从名单里移除 ${name}`;
+        remove.setAttribute('aria-label', `从名单里移除 ${name}`);
+        remove.addEventListener('click', () => changeNames([], [name]).then(renderNamesList));
+        chip.appendChild(remove);
+        list.appendChild(chip);
+    }
+}
+
+// Names typed into the box, several at a time: separated by commas or line breaks (a name may have
+// a space in it)
+function addNames() {
+    const box = document.getElementById('namesAdd');
+    const names = box.value.split(/[\n\r,，、;；]+/).map(cleanName).filter(Boolean);
+    if (!names.length) return;
+    changeNames(names, []).then(() => {
+        box.value = '';
+        renderNamesList();
+    });
+}
+
+// ── Many scores at once ───────────────────────────────────────────────────────
+
+let batchPicker = null;
+
+function batchSetName() {
+    const name = batchPicker.getValue();
+    if (!name) return showError('batchNote', '先选一个名字：点输入框从名单里选，或者直接输入');
+    if (selectedIds.size === 0) return showError('batchNote', '先选中一些进球：点缩略图左上角的方框，或者点“全选”');
+    const role = document.querySelector('input[name="batchRole"]:checked').value;
+    let changed = 0;
+    for (const id of selectedIds) {
+        const score = scores.find(s => s.id === id);
+        if (!score) continue;
+        if (role === 'player') {
+            if (score.player !== name) {
+                setScorer(score, name);
+                changed++;
+            }
+        } else if (!score.assists.includes(name)) {
+            setAssists(score, [...score.assists, name]);
+            changed++;
+        }
+    }
+    showError('batchNote', changed
+        ? `已给 ${changed} 个进球设为${role === 'player' ? '进球' : '助攻'}：${name}`
+        : '选中的进球已经是这个结果了，没有改动');
+}
+
+// ── Selection, confirmation, saving ───────────────────────────────────────────
 
 function toggleSelect(id) {
     const card = document.getElementById(`score-${id}`);
@@ -1293,6 +2089,8 @@ function toggleSelect(id) {
 function selectAll(checked) {
     scores.forEach(s => {
         const card = document.getElementById(`score-${s.id}`);
+        // With "只看未标注" on, the hidden cards are not selected; "全不选" clears them all the same
+        if (checked && !isCardShown(s)) return;
         if (checked) {
             selectedIds.add(s.id);
             card.classList.add('score-selected');
@@ -1303,30 +2101,15 @@ function selectAll(checked) {
     });
 }
 
-function batchSetPlayer() {
-    const name = document.getElementById('batchPlayer').value.trim();
-    if (!name) return;
-    selectedIds.forEach(id => {
-        const score = scores.find(s => s.id === id);
-        if (score) score.player = name;
-        const input = document.querySelector(`input[data-score-id="${id}"]`);
-        if (input) input.value = name;
-    });
-    saveScores();
-}
-
-function setPlayer(id, name) {
-    const score = scores.find(s => s.id === id);
-    if (score) score.player = name;
-    saveScores();
-}
-
 function toggleConfirm(id, confirmed) {
     const score = scores.find(s => s.id === id);
-    if (score) score.confirmed = confirmed;
+    if (!score) return;
+    score.confirmed = confirmed;
     const card = document.getElementById(`score-${id}`);
     card.classList.toggle('score-rejected', !confirmed);
+    card.querySelector('.toggle-switch input').checked = confirmed;
     updateCounts();
+    if (id === currentPlayId) updateSnippetButtons();
     saveScores();
 }
 
@@ -1335,13 +2118,91 @@ function updateCounts() {
     document.getElementById('confirmedCount').textContent = confirmed;
 }
 
-function saveScores() {
+function postScores(leaving) {
+    const body = JSON.stringify({video_id: VIDEO_ID, scores: scores});
+    // When the page is being left the request has to outlive it. Browsers allow that for small
+    // requests only; a large one goes the usual way.
+    const keepalive = !!leaving && new Blob([body]).size < 60000;
     return fetch('/api/update-scores', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({video_id: VIDEO_ID, scores: scores})
+        body,
+        keepalive
     });
 }
+
+let saveTimer = null;
+
+function saveScores() {
+    // Changes made in a row (a handle being dragged, names picked one after the other) go in one
+    // request. Resolves once they are on disk.
+    return new Promise(resolve => {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+            saveTimer = null;
+            postScores().then(resolve, resolve);
+        }, 200);
+    });
+}
+
+// Leaving the page: what is still waiting goes now
+window.addEventListener('pagehide', () => {
+    if (saveTimer) {
+        clearTimeout(saveTimer);
+        postScores(true);
+    }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+    for (const score of scores) {
+        document.getElementById(`score-${score.id}`).classList.toggle('score-unlabelled', !isLabelled(score));
+        makeLabelFields(score);
+    }
+    updateLabelProgress();
+
+    // A name taken here (typed with Enter, or clicked in the list) is applied at once; Enter in an
+    // empty field applies what was taken before
+    batchPicker = createNamePicker({
+        placeholder: '选择或输入姓名',
+        names: namesForPicker,
+        onChange: batchSetName,
+        onEnter: batchSetName
+    });
+    document.getElementById('batchName').appendChild(batchPicker.el);
+
+    snippetScorer = createNamePicker({
+        placeholder: '其他姓名…',
+        names: namesForPicker,
+        transient: true,
+        onChange: name => setScorer(currentScore(), name)
+    });
+    snippetAssists = createNamePicker({
+        multiple: true,
+        placeholder: '其他姓名…',
+        names: namesForPicker,
+        transient: true,
+        exclude: name => {
+            const score = currentScore();
+            return !score || name === score.player || score.assists.includes(name);
+        },
+        onChange: name => setAssists(currentScore(), [...currentScore().assists, name])
+    });
+    document.getElementById('snippetScorers').appendChild(snippetScorer.el);
+    document.getElementById('snippetAssists').appendChild(snippetAssists.el);
+
+    // Where the make is on the range the handles cover
+    const zero = (-TRIM.min / (TRIM.max - TRIM.min) * 100) + '%';
+    document.querySelector('.trim-zero-marker').style.left = zero;
+    document.getElementById('trimZeroLabel').style.left = zero;
+
+    document.getElementById('trimMin').addEventListener('input', onTrimInput);
+    document.getElementById('trimMax').addEventListener('input', onTrimInput);
+
+    // The playback window is as high as the page each time it opens, and whenever that changes
+    document.getElementById('snippetPlayer').style.aspectRatio = `${FRAME.width} / ${FRAME.height}`;
+    document.getElementById('snippetBody').addEventListener('scroll', updateSnippetShades, {passive: true});
+    window.addEventListener('resize', fitSnippetWindow);
+});
 
 async function generateHighlights() {
     const confirmed = scores.filter(s => s.confirmed);
@@ -1400,10 +2261,9 @@ function pollGenProgress() {
 
 function resumeDetection() {
     // Save current scores first, then redirect to index with resume param
-    saveScores();
-    setTimeout(() => {
+    postScores().finally(() => {
         window.location.href = `/?resume=${VIDEO_ID}`;
-    }, 300);
+    });
 }
 </script>
 {% endblock %}

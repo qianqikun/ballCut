@@ -21,7 +21,8 @@ from config import (SECRET_KEY, MAX_CONTENT_LENGTH, THUMBNAIL_DIR, UPLOAD_DIR,
                     OUTPUT_DIR, SESSION_DIR, TEMP_DIR, FRAME_SKIP,
                     MIN_SCORE_INTERVAL, CLIP_BEFORE, CLIP_AFTER)
 from src.detector import ScoreDetector, extract_first_frame
-from src.editor import generate_highlights, check_ffmpeg, keyframe_interval, EXPORT_MODES
+from src.editor import (generate_highlights, check_ffmpeg, keyframe_interval, EXPORT_MODES,
+                        clean_name)
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -46,9 +47,43 @@ RESUMABLE_STATUSES = ('paused', 'processing', 'error')
 SCORE_MATCH_SECONDS = 2.0
 VIDEO_ID_PATTERN = re.compile(r'[0-9a-f]{12}')
 
+# The names that were given to scores before, so that they can be picked instead of typed again.
+# Kept in the data folder, next to the sessions: they belong to this computer, not to a browser.
+_names_lock = threading.RLock()
+NAME_MAX_LENGTH = 50
+
 
 def get_session_path(video_id):
     return os.path.join(SESSION_DIR, f'{video_id}.json')
+
+
+def get_names_path():
+    return os.path.join(os.path.dirname(SESSION_DIR), 'names.json')
+
+
+def load_names():
+    """The names used before, the newest first."""
+    with _names_lock:
+        try:
+            with open(get_names_path(), 'r', encoding='utf-8') as f:
+                names = json.load(f)
+        except (OSError, ValueError):
+            return []
+    return [n for n in names if isinstance(n, str) and n.strip()] if isinstance(names, list) else []
+
+
+def change_names(add=(), remove=()):
+    """Names in `add` go to the front unless they are in already; those in `remove` are dropped.
+    Returns the names as they are now."""
+    with _names_lock:
+        names = [n for n in load_names() if n not in remove]
+        for name in add:
+            if name and len(name) <= NAME_MAX_LENGTH and name not in names and name not in remove:
+                names.insert(0, name)
+        names = names[:500]
+        with open(get_names_path(), 'w', encoding='utf-8') as f:
+            json.dump(names, f, ensure_ascii=False, indent=2)
+        return names
 
 
 def format_time(seconds):
@@ -235,6 +270,7 @@ def review(video_id):
     } for r in runs]
 
     return render_template('review.html', video_id=video_id, session=session,
+                           names=load_names(),
                            clip_before=CLIP_BEFORE, clip_after=CLIP_AFTER, running=running,
                            range_defaults=range_defaults, runs_view=runs_view,
                            job=session.get('active_run') if running else None,
@@ -802,7 +838,7 @@ def api_scores(video_id):
 
 @app.route('/api/update-scores', methods=['POST'])
 def api_update_scores():
-    """Save the labels (player, confirmed, clip range) the review page changed on each score."""
+    """Save the labels (scorer, assists, confirmed, clip range) the review page changed on each score."""
     data = request.get_json()
     video_id = data.get('video_id')
     scores = data.get('scores', [])
@@ -819,11 +855,26 @@ def api_update_scores():
             score = current.get(change.get('id'))
             if score is None:
                 continue
-            for key in ('player', 'confirmed', 'clip_before', 'clip_after'):
+            for key in ('player', 'confirmed', 'clip_before', 'clip_after', 'clip_custom'):
                 if key in change:
                     score[key] = change[key]
+            if isinstance(change.get('assists'), list):
+                assists = [clean_name(a) for a in change['assists'] if isinstance(a, str)]
+                score['assists'] = list(dict.fromkeys(a for a in assists if a))
         save_session(video_id, session)
     return jsonify({'status': 'ok'})
+
+
+@app.route('/api/names', methods=['POST'])
+def api_names():
+    """Add names to those used before and remove some: {"add": [...], "remove": [...]}."""
+    data = request.get_json(silent=True) or {}
+
+    def listed(key):
+        value = data.get(key)
+        return [clean_name(v) for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+    return jsonify({'status': 'ok', 'names': change_names(listed('add'), listed('remove'))})
 
 
 @app.route('/api/frame/<video_id>')

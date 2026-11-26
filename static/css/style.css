@@ -193,11 +193,128 @@ body {
     min-width: 160px;
 }
 
-.input-player {
+/* ── Name picker (static/js/name-picker.js): a field for one name or several ── */
+.name-field {
+    position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.2rem;
     width: 100%;
-    margin-top: 0.5rem;
-    padding: 0.5rem 0.7rem;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0.15rem 0.3rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    cursor: text;
+    transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.name-field:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.name-input {
+    flex: 1 1 60px;
+    min-width: 0;
+    padding: 0.2rem 0.3rem;
+    border: none;
+    background: none;
+    color: var(--text-primary);
     font-size: 0.85rem;
+    font-family: inherit;
+    line-height: 1.4;
+    outline: none;
+}
+
+.name-input::placeholder {
+    color: var(--text-muted);
+}
+
+.name-field-multi .name-input {
+    flex: 1 1 56px;
+}
+
+.name-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    padding: 1px 2px 1px 8px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.2);
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+
+.name-chip-remove, .name-clear, .name-toggle {
+    flex: none;
+    padding: 2px 5px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    font-family: inherit;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.name-chip-remove:hover, .name-clear:hover {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--danger);
+}
+
+.name-toggle:hover {
+    color: var(--accent);
+}
+
+/* The single name can be cleared once there is one */
+.name-clear {
+    display: none;
+}
+
+.name-field-filled .name-clear {
+    display: inline-block;
+}
+
+/* The list of names: one per page, under the field that has the focus (also above a window) */
+.name-list {
+    position: fixed;
+    z-index: 1000;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+}
+
+.name-option {
+    padding: 0.4rem 0.7rem;
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 0.88rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.name-option.is-active {
+    background: var(--accent);
+    color: #fff;
+}
+
+.name-option-new {
+    color: var(--accent);
+    font-weight: 600;
+}
+
+.name-option-new.is-active {
+    color: #fff;
 }
 
 /* ── Buttons ── */
@@ -1306,14 +1423,38 @@ body {
     cursor: default;
 }
 
-.tl-select {
-    padding: 0.3rem 0.5rem;
-    background: var(--bg-input);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
-    font-family: inherit;
-    font-size: 0.8rem;
+/* How long the parts of "上一段 / 下一段" are: three buttons as one piece, the pressed one lit */
+.tl-step-len {
+    display: inline-flex;
+}
+
+.tl-step-len .tl-btn {
+    position: relative;    /* for the z-index below */
+    margin-left: -1px;     /* one border between neighbours */
+    border-radius: 0;
+}
+
+.tl-step-len .tl-btn:first-child {
+    margin-left: 0;
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.tl-step-len .tl-btn:last-child {
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.tl-step-len .tl-btn[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.tl-step-len .tl-btn[aria-pressed="true"]:hover {
+    color: #fff;
+}
+
+.tl-step-len .tl-btn:hover {
+    z-index: 1;            /* its lit border lies over the neighbours' */
 }
 
 .range-quick {

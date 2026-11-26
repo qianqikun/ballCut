@@ -15,8 +15,8 @@ for d in [DATA_DIR, UPLOAD_DIR, THUMBNAIL_DIR, OUTPUT_DIR, SESSION_DIR, TEMP_DIR
 # Detection settings
 FRAME_SKIP = 3          # Process every Nth frame (higher = faster but less accurate)
 MIN_SCORE_INTERVAL = 5.0  # Minimum seconds between detected scores
-CLIP_BEFORE = 5.0       # Seconds before score to include in clip
-CLIP_AFTER = 3.0        # Seconds after score to include in clip
+CLIP_BEFORE = 6.0       # Seconds before score to include in clip (the review page can go back to 15)
+CLIP_AFTER = 2.0        # Seconds after score to include in clip
 
 # Flask settings
 MAX_CONTENT_LENGTH = None  # Upload size limit in bytes; None = no limit (e.g. 10 * 1024 * 1024 * 1024 for 10 GB)

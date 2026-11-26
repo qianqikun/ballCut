@@ -421,6 +421,7 @@ class ScoreDetector:
                     'motion_score': round(float(last[5]), 2),  # Use confidence as score
                     'thumbnail': thumb_filename,
                     'player': '',
+                    'assists': [],
                     'confirmed': True,
                     'yolo_bbox': [
                         round(last[1] / width, 6),
