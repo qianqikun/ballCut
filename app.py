@@ -21,7 +21,7 @@ from config import (SECRET_KEY, MAX_CONTENT_LENGTH, THUMBNAIL_DIR, UPLOAD_DIR,
                     OUTPUT_DIR, SESSION_DIR, TEMP_DIR, FRAME_SKIP,
                     MIN_SCORE_INTERVAL, CLIP_BEFORE, CLIP_AFTER)
 from src.detector import ScoreDetector, extract_first_frame
-from src.editor import generate_highlights, check_ffmpeg
+from src.editor import generate_highlights, check_ffmpeg, keyframe_interval, EXPORT_MODES
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -204,12 +204,27 @@ def review(video_id):
     else:
         # A part was detected again before: start from what was used then, so that it does not climb by itself
         default_sensitivity = last_sensitivity
+    duration = session.get('duration')
     range_defaults = {
         'sensitivity': max(10, min(90, default_sensitivity)),
         'hoop': last.get('hoop_region'),
         'video_hoop': session.get('hoop_region'),
-        'duration': session.get('duration'),
+        'duration': duration,
+        # For picking a time range without typing: where the last detection of a part started and
+        # ended, and which parts of the video have been detected again already
+        'last_start': last.get('start'),
+        'last_end': last.get('end'),
+        'covered': [[r['start'], r.get('end') if r.get('end') is not None else duration]
+                    for r in runs if r.get('start') is not None],
     }
+    # How clips are exported: what was chosen last time, and how far a copied clip can start early
+    export_mode = session.get('export_mode')
+    export_mode = export_mode if export_mode in EXPORT_MODES else 'lossless'
+    try:
+        keyframe_gap = keyframe_interval(session['video_path'])
+    except Exception as e:   # only a hint for the page: nothing depends on it
+        logger.warning(f"Could not read the keyframe interval of {video_id}: {e}")
+        keyframe_gap = None
     runs_view = [{
         'run': r['run'],
         'range': '整段' if r.get('start') is None
@@ -222,7 +237,8 @@ def review(video_id):
     return render_template('review.html', video_id=video_id, session=session,
                            clip_before=CLIP_BEFORE, clip_after=CLIP_AFTER, running=running,
                            range_defaults=range_defaults, runs_view=runs_view,
-                           job=session.get('active_run') if running else None)
+                           job=session.get('active_run') if running else None,
+                           export_mode=export_mode, keyframe_gap=keyframe_gap)
 
 
 @app.route('/highlights/<video_id>')
@@ -511,7 +527,9 @@ def api_detect_range():
     data = request.get_json()
     video_id = data.get('video_id')
 
-    start = parse_time(data.get('start'))
+    # Nothing or a blank for the start time: from the beginning of the video
+    start = (0.0 if data.get('start') is None or str(data.get('start')).strip() == ''
+             else parse_time(data.get('start')))
     if start is None:
         return jsonify({'error': '开始时间看不懂，请按 1:23:45、23:45 或秒数填写'}), 400
     end = None
@@ -904,20 +922,31 @@ def api_generate():
     clip_before = data.get('clip_before', CLIP_BEFORE)
     clip_after = data.get('clip_after', CLIP_AFTER)
 
+    # How the clips are made: copied without re-encoding (the default), or encoded again for exact
+    # starts. What is chosen is remembered for the next time.
+    mode = data.get('mode') or session.get('export_mode') or 'lossless'
+    if mode not in EXPORT_MODES:
+        return jsonify({'error': '未知的导出方式'}), 400
+    with _session_lock:
+        latest = load_session(video_id)
+        if latest:
+            latest['export_mode'] = mode
+            save_session(video_id, latest)
+
     tasks[video_id] = {'progress': 0.0, 'status': 'generating', 'error': None,
                        'score_count': len(session.get('scores', []))}
 
     thread = threading.Thread(
         target=_run_generate,
-        args=(video_id, session, float(clip_before), float(clip_after)),
+        args=(video_id, session, float(clip_before), float(clip_after), mode),
         daemon=True
     )
     thread.start()
 
-    return jsonify({'status': 'started'})
+    return jsonify({'status': 'started', 'mode': mode})
 
 
-def _run_generate(video_id, session, clip_before, clip_after):
+def _run_generate(video_id, session, clip_before, clip_after, mode):
     """Background highlight generation task."""
     try:
         def progress_cb(p):
@@ -928,14 +957,15 @@ def _run_generate(video_id, session, clip_before, clip_after):
 
         confirmed = [s for s in session['scores'] if s.get('confirmed', True)]
 
-        results = generate_highlights(
+        results, export_info = generate_highlights(
             video_path=session['video_path'],
             scores=confirmed,
             output_dir=output_dir,
             temp_dir=temp_dir,
             clip_before=clip_before,
             clip_after=clip_after,
-            progress_callback=progress_cb
+            progress_callback=progress_cb,
+            mode=mode
         )
 
         # Into the session as it is now: labels may have been changed while the clips were made
@@ -943,6 +973,7 @@ def _run_generate(video_id, session, clip_before, clip_after):
             latest = load_session(video_id)
             if latest:
                 latest['highlights'] = results
+                latest['export_info'] = export_info
                 latest['status'] = 'complete'
                 save_session(video_id, latest)
 

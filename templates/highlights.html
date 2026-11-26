@@ -7,6 +7,21 @@
     <p class="subtitle">按球员分组的进球集锦已就绪</p>
 </div>
 
+{% if session.export_info %}
+{% set info = session.export_info %}
+<section class="card export-info">
+    <h2>本次导出</h2>
+    {% if info.mode == 'precise' %}
+    <p>精确切点：片段起止与设定一致。重新编码，用的是{{ info.encoder }}，画质接近原片。</p>
+    {% else %}
+    <p>无损直切：画面和声音与原视频完全一样，没有重新编码。</p>
+    {% if info.start_shift %}
+    <p class="hint-text">片段的起点对齐在关键帧上，这次最多比设定的时间提前 {{ info.start_shift }} 秒；结尾比设定多出几帧。</p>
+    {% endif %}
+    {% endif %}
+</section>
+{% endif %}
+
 {% if session.highlights %}
 <div class="highlight-grid">
     {% for player, info in session.highlights.items() %}

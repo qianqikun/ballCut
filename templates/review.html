@@ -40,14 +40,52 @@
         与已有进球相差不到 2 秒的不会重复添加。
     </p>
 
+    <!-- The video as a timeline: its makes as marks, the parts detected again shaded, a range to drag out -->
+    <div class="timeline" id="timeline">
+        <div class="tl-overview" id="tlOverview" title="整段视频。拖动上面的方块，移动下面的时间轴">
+            <div class="tl-window" id="tlWindow"></div>
+        </div>
+        <div class="tl-toolbar">
+            <div class="tl-toolbar-group">
+                <button type="button" class="tl-btn" id="tlZoomOut" title="缩小">−</button>
+                <button type="button" class="tl-btn" id="tlZoomIn" title="放大">＋</button>
+                <button type="button" class="tl-btn" id="tlZoomAll" title="显示整段视频">整段</button>
+            </div>
+            <div class="tl-toolbar-group">
+                <button type="button" class="tl-btn" id="tlPrev" title="上一段">上一段</button>
+                <span class="hint-text" id="tlStepLabel"></span>
+                <button type="button" class="tl-btn" id="tlNext" title="下一段">下一段</button>
+                <select id="tlStepLen" class="tl-select" title="“上一段、下一段”每一段的长度">
+                    <option value="300">每段 5 分钟</option>
+                    <option value="600" selected>每段 10 分钟</option>
+                    <option value="1800">每段 30 分钟</option>
+                </select>
+            </div>
+        </div>
+        <div class="tl-detail" id="tlDetail" title="拖动两端选起止时间，拖动选中的部分整体移动，滚轮缩放">
+            <div class="tl-selection hidden" id="tlSelection">
+                <span class="tl-handle" data-edge="start" title="拖动改变开始时间"></span>
+                <span class="tl-handle" data-edge="end" title="拖动改变结束时间"></span>
+                <span class="tl-label tl-label-start"></span>
+                <span class="tl-label tl-label-end"></span>
+            </div>
+        </div>
+    </div>
+
     <div class="range-form" id="rangeForm">
         <div class="control-group">
             <label for="rangeStart">开始时间</label>
-            <input type="text" id="rangeStart" class="input-text" placeholder="1:23:45 或 23:45" autocomplete="off">
+            <input type="text" id="rangeStart" class="input-text" placeholder="留空 = 从头开始" autocomplete="off">
         </div>
         <div class="control-group">
             <label for="rangeEnd">结束时间</label>
             <input type="text" id="rangeEnd" class="input-text" placeholder="留空 = 到视频结尾" autocomplete="off">
+        </div>
+        <div class="range-quick">
+            <button type="button" class="tl-btn" onclick="nudgeRange(30)" title="开始和结束各往外 30 秒">各 +30 秒</button>
+            <button type="button" class="tl-btn" onclick="nudgeRange(60)">各 +1 分钟</button>
+            <button type="button" class="tl-btn" onclick="nudgeRange(-30)" title="开始和结束各往里 30 秒">各 −30 秒</button>
+            <button type="button" class="tl-btn" id="btnOpenPicker" onclick="openRangePicker()">▶ 看视频打点</button>
         </div>
         <div class="control-group range-sensitivity">
             <label for="rangeSensitivity">检测灵敏度 <strong id="rangeSensitivityValue"></strong></label>
@@ -122,6 +160,27 @@
     </div>
 </div>
 
+<!-- Watching the video, to mark where a part to detect again begins and ends -->
+<div class="modal-overlay hidden" id="rangePickerModal" style="z-index: 300;">
+    <div class="modal-content hoop-modal">
+        <h2>看视频打点</h2>
+        <p>看到漏掉的进球时，点"设为开始"或"设为结束"。选好后可以先预览，确认无误再点完成。</p>
+        <video id="rangePickerVideo" controls playsinline></video>
+        <div class="error-msg" id="rangePickerError"></div>
+        <div class="range-picker-marks">
+            <button type="button" class="btn btn-sm btn-outline" onclick="markRangeEdge('start')">● 设为开始</button>
+            <span id="markStartLabel">未设置</span>
+            <button type="button" class="btn btn-sm btn-outline" onclick="markRangeEdge('end')">○ 设为结束</button>
+            <span id="markEndLabel">未设置</span>
+            <button type="button" class="btn btn-sm btn-outline" onclick="previewRange()">▶ 预览所选范围</button>
+        </div>
+        <div class="hoop-modal-buttons">
+            <button class="btn btn-outline" onclick="closeRangePicker()">取消</button>
+            <button class="btn btn-primary" onclick="applyRangeMarks()">完成</button>
+        </div>
+    </div>
+</div>
+
 {% if session.scores|length == 0 %}
 <section class="card empty-state">
     <div class="empty-icon">🔍</div>
@@ -157,15 +216,6 @@
             <img src="/api/thumbnail/{{ video_id }}/{{ score.thumbnail }}"
                  class="score-thumb" alt="进球 {{ loop.index }}" loading="lazy">
             <span class="score-time-badge">{{ score.timestamp_str }}</span>
-            {% if score.run and score.run > 1 %}
-            <span class="score-run-badge" title="由第 {{ score.run }} 次检测发现，当时灵敏度 {{ score.sensitivity }}">
-                第{{ score.run }}次检测 · 灵敏度{{ score.sensitivity }}</span>
-            {% endif %}
-            {% if score.missed_by %}
-            <span class="score-missed-badge {% if score.run and score.run > 1 %}score-missed-badge-below{% endif %}"
-                  title="第 {{ score.missed_by }} 次检测检查了这一段，但没有再次检出这个进球，建议复核">
-                第{{ score.missed_by }}次未检出</span>
-            {% endif %}
             <div class="score-play-overlay" onclick="playSnippet({{ score.id }})" title="查看回放与剪辑">
                 <div class="play-icon">▶</div>
             </div>
@@ -189,6 +239,21 @@
                    value="{{ score.player }}"
                    data-score-id="{{ score.id }}"
                    onchange="setPlayer({{ score.id }}, this.value)">
+            <div class="score-tags">
+                <button type="button" class="score-tag score-tag-range"
+                        onclick="selectGapBefore({{ loop.index0 }})"
+                        title="{{ '重新检测上一个进球到这个进球之间的这一段' if loop.index0 > 0 else '重新检测视频开头到这个进球之间的这一段' }}">
+                    {{ '🔍 重检上一球到这里' if loop.index0 > 0 else '🔍 重检开头到这里' }}</button>
+                {% if score.run and score.run > 1 %}
+                <span class="score-tag score-tag-run" title="由第 {{ score.run }} 次检测发现，当时灵敏度 {{ score.sensitivity }}">
+                    第{{ score.run }}次检测 · 灵敏度{{ score.sensitivity }}</span>
+                {% endif %}
+                {% if score.missed_by %}
+                <span class="score-tag score-tag-missed"
+                      title="第 {{ score.missed_by }} 次检测检查了这一段，但没有再次检出这个进球，建议复核">
+                    第{{ score.missed_by }}次未检出</span>
+                {% endif %}
+            </div>
         </div>
     </div>
     {% endfor %}
@@ -196,6 +261,18 @@
 
 <!-- Actions -->
 <section class="card actions-card">
+    <div class="export-mode" id="exportMode">
+        <span class="hint-text">导出方式</span>
+        <label class="export-option" title="画面和声音与原视频完全一样，几秒完成">
+            <input type="radio" name="exportMode" value="lossless" {{ 'checked' if export_mode == 'lossless' }}>
+            无损直切
+        </label>
+        <label class="export-option" title="片段起止精确。重新编码，画质接近原片，文件更大；有显卡时用显卡编码">
+            <input type="radio" name="exportMode" value="precise" {{ 'checked' if export_mode == 'precise' }}>
+            精确切点
+        </label>
+    </div>
+    <p class="hint-text export-hint" id="exportModeHint"></p>
     <div class="actions-row">
         <div class="action-info">
             <span id="confirmedCount">{{ session.scores|selectattr('confirmed')|list|length }}</span>
@@ -278,21 +355,44 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/hoop-picker.js') }}"></script>
 <style>
-/* Badges for what a detection of one part of the video found, and for what it did not find again */
-.score-run-badge, .score-missed-badge {
-    position: absolute;
-    left: 8px;
-    top: 8px;
+/* Under the player name of a score: the way to detect the part before it again, and where the score
+   came from (a detection of one part, one not found again since). In the info area, not over the
+   picture: there they covered the select box in the corner. */
+.score-tags {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+.score-tag {
+    display: inline-block;
     padding: 2px 8px;
     border-radius: 4px;
+    border: 1px solid transparent;
     font-size: 0.72rem;
     font-weight: 600;
+    line-height: 1.5;
     color: #fff;
     background: rgba(59, 130, 246, 0.85);
     white-space: nowrap;
 }
-.score-missed-badge { background: rgba(90, 106, 136, 0.92); }
-.score-missed-badge-below { top: 34px; }
+
+.score-tag-missed { background: rgba(90, 106, 136, 0.92); }
+
+.score-tag-range {
+    color: var(--text-secondary);
+    background: transparent;
+    border-color: var(--border-color);
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.score-tag-range:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
 
 /* While a detection runs, labels are not edited: the list is about to change */
 .review-busy .score-grid, .review-busy .toolbar, .review-busy .actions-card {
@@ -301,9 +401,57 @@
 }
 
 /* ... and the form gives way to what is running, so that the progress stays above the bar at the bottom */
-.range-running #rangeForm, .range-running .range-hoop, .range-running .range-start-row,
-.range-running .error-msg {
+.range-running #timeline, .range-running #rangeForm, .range-running .range-hoop,
+.range-running .range-start-row, .range-running .error-msg {
     display: none;
+}
+
+.range-picker-marks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem 0.75rem;
+    margin-top: 1rem;
+}
+
+.range-picker-marks span {
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    font-weight: 600;
+    min-width: 3.5em;
+}
+
+.export-mode {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem 1.25rem;
+    margin-bottom: 0.5rem;
+}
+
+.export-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.export-option input {
+    accent-color: var(--accent);
+}
+
+.export-option:has(input:checked) {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.export-hint {
+    text-align: center;
+    margin-bottom: 0.75rem;
 }
 
 .range-job {
@@ -524,17 +672,387 @@ function closeHoopPicker() {
     document.getElementById('hoopModal').classList.add('hidden');
 }
 
-async function startRangeDetection() {
-    const startText = document.getElementById('rangeStart').value;
-    const endText = document.getElementById('rangeEnd').value;
-    const start = parseTime(startText);
-    if (start === null) return showError('rangeError', '开始时间看不懂，请按 1:23:45、23:45 或秒数填写');
-    let end = null;
-    if (endText.trim()) {
-        end = parseTime(endText);
-        if (end === null) return showError('rangeError', '结束时间看不懂，请按 1:23:45、23:45 或秒数填写');
-        if (end <= start) return showError('rangeError', '结束时间需要晚于开始时间');
+// ── The time range to detect again ────────────────────────────────────────────
+// The two time fields hold it. It is also shown on the timeline, and it can be made there, on a
+// score card, or in the video player ("看视频打点").
+
+// The video as a timeline: the whole of it on the upper bar, the part between TL.from and TL.to on
+// the lower one; its makes as marks, and the parts detected again already shaded
+const TL = {
+    duration: RANGE.duration || 0,
+    marks: scores.map(s => s.timestamp).sort((a, b) => a - b),
+    covered: (RANGE.covered || []).filter(r => r[0] !== null && r[1] !== null),
+    from: 0,
+    to: RANGE.duration || 0,
+    minSpan: Math.max(2, (RANGE.duration || 0) / 300),   // cannot zoom in further than that
+    drag: null
+};
+
+// What the two fields say: {first, last, toEnd}; null when one of them cannot be read
+function readRange() {
+    const firstText = document.getElementById('rangeStart').value.trim();
+    const lastText = document.getElementById('rangeEnd').value.trim();
+    const first = firstText === '' ? 0 : parseTime(firstText);
+    if (first === null) return null;
+    if (lastText === '') return {first, last: TL.duration, toEnd: true};
+    const last = parseTime(lastText);
+    return last === null ? null : {first, last, toEnd: false};
+}
+
+function setRange(first, last, toEnd) {
+    if (TL.duration) {
+        first = Math.max(0, Math.min(TL.duration, first));
+        last = Math.max(0, Math.min(TL.duration, last));
     }
+    document.getElementById('rangeStart').value = first > 0 ? formatTime(first) : '';
+    document.getElementById('rangeEnd').value = (toEnd || (TL.duration && last >= TL.duration)) ? '' : formatTime(last);
+    renderTimeline();
+}
+
+function renderTimeline() {
+    if (!TL.duration) return;
+    const range = readRange();
+    const overview = document.getElementById('tlOverview');
+    const detail = document.getElementById('tlDetail');
+
+    const build = (bar, from, to) => {
+        bar.querySelectorAll('.tl-covered, .tl-tick').forEach(e => e.remove());
+        const span = to - from;
+        for (const [a, b] of TL.covered) {
+            if (b <= from || a >= to) continue;
+            const shade = document.createElement('div');
+            shade.className = 'tl-covered';
+            shade.style.left = (Math.max(a, from) - from) / span * 100 + '%';
+            shade.style.width = (Math.min(b, to) - Math.max(a, from)) / span * 100 + '%';
+            bar.appendChild(shade);
+        }
+        for (const t of TL.marks) {
+            if (t < from || t > to) continue;
+            const mark = document.createElement('div');
+            mark.className = 'tl-tick';
+            mark.style.left = (t - from) / span * 100 + '%';
+            bar.appendChild(mark);
+        }
+    };
+    build(overview, 0, TL.duration);
+    build(detail, TL.from, TL.to);
+
+    // The window: the part of the upper bar that the lower one shows
+    const window_ = document.getElementById('tlWindow');
+    window_.style.left = TL.from / TL.duration * 100 + '%';
+    window_.style.width = (TL.to - TL.from) / TL.duration * 100 + '%';
+
+    // The range, with its times at the two ends
+    const selection = document.getElementById('tlSelection');
+    const hasRange = range !== null && range.last > range.first;
+    selection.classList.toggle('hidden', !hasRange);
+    if (hasRange) {
+        const span = TL.to - TL.from;
+        selection.style.left = (Math.max(range.first, TL.from) - TL.from) / span * 100 + '%';
+        selection.style.width = (Math.min(range.last, TL.to) - Math.max(range.first, TL.from)) / span * 100 + '%';
+        const endText = range.toEnd ? '到结尾' : formatTime(range.last);
+        // Too narrow for both times side by side: one label with the whole range
+        const narrow = selection.getBoundingClientRect().width < 120;
+        selection.querySelector('.tl-label-start').textContent = narrow ? `${formatTime(range.first)} – ${endText}` : formatTime(range.first);
+        const endLabel = selection.querySelector('.tl-label-end');
+        endLabel.textContent = endText;
+        endLabel.style.display = narrow ? 'none' : '';
+    }
+
+    // "第 n / N 段": where the range begins among the fixed-length parts of the video
+    const length = parseInt(document.getElementById('tlStepLen').value, 10);
+    const parts = Math.ceil(TL.duration / length);
+    const index = range ? Math.min(parts - 1, Math.floor(range.first / length)) : -1;
+    document.getElementById('tlStepLabel').textContent = (TL.duration > length && index >= 0)
+        ? `第 ${index + 1} / ${parts} 段` : '';
+    document.getElementById('tlPrev').disabled = index <= 0;
+    document.getElementById('tlNext').disabled = index < 0 || index >= parts - 1;
+}
+
+function tlSetWindow(from, to) {
+    const span = Math.max(TL.minSpan, Math.min(TL.duration, to - from));
+    TL.from = Math.max(0, Math.min(TL.duration - span, from));
+    TL.to = TL.from + span;
+    renderTimeline();
+}
+
+// Makes sure the range is on the lower bar: moved there, or the bar zoomed out to hold it
+function tlShow(first, last) {
+    const span = TL.to - TL.from;
+    if (last - first > span * 0.9) {
+        const margin = Math.max((last - first) * 0.1, TL.duration * 0.01);
+        tlSetWindow(first - margin, last + margin);
+    } else if (first < TL.from || last > TL.to) {
+        tlSetWindow((first + last) / 2 - span / 2, (first + last) / 2 + span / 2);
+    }
+}
+
+function tlZoom(factor, around) {
+    const span = TL.to - TL.from;
+    const newSpan = Math.max(TL.minSpan, Math.min(TL.duration, span * factor));
+    const centre = around === undefined ? (TL.from + TL.to) / 2 : around;
+    const ratio = span > 0 ? (centre - TL.from) / span : 0.5;
+    tlSetWindow(centre - ratio * newSpan, centre - ratio * newSpan + newSpan);
+}
+
+function tlTimeAt(event, bar) {
+    const rect = bar.getBoundingClientRect();
+    return (event.clientX - rect.left) / rect.width;   // 0..1 along the bar
+}
+
+// Dragging on the lower bar: an end of the range, the whole range, or a new range from an empty place.
+// A click without dragging moves the nearer end there.
+(function tlDetailPointer() {
+    const bar = document.getElementById('tlDetail');
+    const timeOf = ratio => Math.max(0, Math.min(TL.duration, TL.from + ratio * (TL.to - TL.from)));
+
+    bar.addEventListener('pointerdown', event => {
+        if (!TL.duration) return;
+        const ratio = tlTimeAt(event, bar);
+        const time = timeOf(ratio);
+        const range = readRange();
+        const edge = event.target.dataset ? event.target.dataset.edge : null;
+        if (edge) {
+            TL.drag = {mode: edge};
+        } else if (range && range.first <= time && time <= range.last && event.target.closest('#tlSelection')) {
+            TL.drag = {mode: 'move', offset: time - range.first, length: range.last - range.first};
+        } else {
+            TL.drag = {mode: 'new', anchor: time, before: range, moved: false};
+        }
+        bar.setPointerCapture(event.pointerId);
+        event.preventDefault();
+    });
+
+    bar.addEventListener('pointermove', event => {
+        if (!TL.drag) return;
+        const ratio = tlTimeAt(event, bar);
+        const range = readRange();
+        const drag = TL.drag;
+
+        // Dragged past the end of the bar: the bar follows
+        if (ratio < 0 || ratio > 1) {
+            const shift = (ratio < 0 ? Math.max(-1, ratio) : Math.min(0, ratio - 1)) * (TL.to - TL.from);
+            tlSetWindow(TL.from + shift, TL.to + shift);
+        }
+        const time = timeOf(Math.max(0, Math.min(1, ratio)));
+        if (drag.mode === 'start' || drag.mode === 'end') {
+            if (!range) return;
+            const minimum = Math.max(1, TL.duration / 2000);
+            if (drag.mode === 'start') setRange(Math.min(time, range.last - minimum), range.last, range.toEnd);
+            else setRange(range.first, Math.max(time, range.first + minimum), false);
+        } else if (drag.mode === 'move') {
+            const first = Math.max(0, Math.min(TL.duration - drag.length, time - drag.offset));
+            setRange(first, first + drag.length, range && range.toEnd && first + drag.length >= TL.duration - 0.01);
+        } else {
+            // Only once it is really being dragged: a click is dealt with when the pointer is released
+            if (!drag.moved && Math.abs(time - drag.anchor) > Math.max(0.5, TL.duration / 2000)) drag.moved = true;
+            if (drag.moved) setRange(Math.min(drag.anchor, time), Math.max(drag.anchor, time), false);
+        }
+    });
+
+    const end = () => {
+        const drag = TL.drag;
+        TL.drag = null;
+        if (!drag || drag.mode !== 'new' || drag.moved) return;
+        // A click: the nearer end of the range that was there before comes to the clicked place
+        const before = drag.before;
+        if (before) {
+            setRange(...(drag.anchor < (before.first + before.last) / 2
+                ? [drag.anchor, before.last, before.toEnd]
+                : [before.first, drag.anchor, false]));
+        }
+    };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+
+    bar.addEventListener('wheel', event => {
+        if (!TL.duration) return;
+        event.preventDefault();
+        const ratio = tlTimeAt(event, bar);
+        tlZoom(event.deltaY > 0 ? 1.3 : 1 / 1.3, TL.from + Math.max(0, Math.min(1, ratio)) * (TL.to - TL.from));
+    }, {passive: false});
+})();
+
+// Dragging the window on the upper bar, or pressing elsewhere on it to go there
+(function tlOverviewPointer() {
+    const bar = document.getElementById('tlOverview');
+    bar.addEventListener('pointerdown', event => {
+        if (!TL.duration) return;
+        const ratio = tlTimeAt(event, bar);
+        const onWindow = event.target.id === 'tlWindow';
+        // On the window: it keeps its hold on the place pressed. Beside it: it centres on it.
+        const offset = onWindow ? ratio * TL.duration - TL.from : (TL.to - TL.from) / 2;
+        TL.drag = {mode: 'window', offset};
+        if (!onWindow) tlSetWindow(ratio * TL.duration - offset, ratio * TL.duration - offset + (TL.to - TL.from));
+        bar.setPointerCapture(event.pointerId);
+    });
+    bar.addEventListener('pointermove', event => {
+        if (!TL.drag || TL.drag.mode !== 'window') return;
+        const from = tlTimeAt(event, bar) * TL.duration - TL.drag.offset;
+        tlSetWindow(from, from + (TL.to - TL.from));
+    });
+    const end = () => { TL.drag = null; };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+})();
+
+document.getElementById('tlZoomIn').addEventListener('click', () => tlZoom(1 / 2));
+document.getElementById('tlZoomOut').addEventListener('click', () => tlZoom(2));
+document.getElementById('tlZoomAll').addEventListener('click', () => tlSetWindow(0, TL.duration));
+document.getElementById('tlStepLen').addEventListener('change', renderTimeline);
+
+// "上一段 / 下一段": fixed-length parts of the video, one after the other, so that a long video can be
+// gone through without typing anything
+function tlStep(direction) {
+    const length = parseInt(document.getElementById('tlStepLen').value, 10);
+    const range = readRange();
+    const index = range ? Math.floor((range.first + 0.001) / length) : (direction > 0 ? -1 : 0);
+    const next = Math.max(0, Math.min(Math.ceil(TL.duration / length) - 1, index + direction));
+    const first = next * length, last = Math.min(TL.duration, first + length);
+    setRange(first, last, last >= TL.duration);
+    tlShow(first, last);
+    renderTimeline();
+}
+document.getElementById('tlPrev').addEventListener('click', () => tlStep(-1));
+document.getElementById('tlNext').addEventListener('click', () => tlStep(1));
+
+for (const id of ['rangeStart', 'rangeEnd']) {
+    document.getElementById(id).addEventListener('change', () => {
+        let range = readRange();
+        if (range && range.last <= range.first) {
+            // One end was typed past the other: the other one makes room (a minute, or up to the end
+            // of the video / back to its beginning)
+            if (id === 'rangeStart') setRange(range.first, Math.min(TL.duration, range.first + 60), false);
+            else setRange(Math.max(0, range.last - 60), range.last, false);
+            range = readRange();
+        }
+        renderTimeline();
+        if (range) tlShow(range.first, range.last);
+    });
+}
+
+// From a score card: the part from the make before this one up to this one
+function selectGapBefore(index) {
+    if (!TL.duration) return;
+    const last = TL.marks[index];
+    const first = index > 0 ? TL.marks[index - 1] : 0;
+    setRange(first, last, false);
+    tlShow(first, last);
+    document.getElementById('rangeCard').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+// Both ends further out (positive) or further in (negative)
+function nudgeRange(seconds) {
+    if (!TL.duration) return;
+    const range = readRange() || {first: 0, last: TL.duration, toEnd: true};
+    const first = Math.max(0, range.first - seconds);
+    const last = Math.min(TL.duration, range.last + seconds);
+    setRange(first, last, last >= TL.duration - 0.01);
+    tlShow(first, last);
+}
+
+// ── Watching the video to mark where the part begins and ends ─────────────────
+let pickerMarks = {start: null, end: null};
+
+function showRangeMarks() {
+    document.getElementById('markStartLabel').textContent = pickerMarks.start === null ? '未设置' : formatTime(pickerMarks.start);
+    document.getElementById('markEndLabel').textContent = pickerMarks.end === null ? '到结尾' : formatTime(pickerMarks.end);
+}
+
+function openRangePicker() {
+    const range = readRange();
+    if (range === null) return showError('rangeError', '时间看不懂，请先改正，或清空后再看视频打点');
+    clearError('rangePickerError');
+    // The marks start from what the range is now
+    pickerMarks = {start: range.first > 0 ? range.first : null, end: range.toEnd ? null : range.last};
+    showRangeMarks();
+    document.getElementById('rangePickerModal').classList.remove('hidden');
+    const player = document.getElementById('rangePickerVideo');
+    player.src = `/api/video/${VIDEO_ID}#t=${(pickerMarks.start || 0).toFixed(2)}`;
+    player.play().catch(() => {});
+}
+
+function markRangeEdge(edge) {
+    const player = document.getElementById('rangePickerVideo');
+    if (!isFinite(player.currentTime)) return;
+    const time = Math.round(player.currentTime * 10) / 10;
+    pickerMarks[edge] = time;
+    // A start must come before the end: whichever was marked last wins
+    if (pickerMarks.start !== null && pickerMarks.end !== null && pickerMarks.start >= pickerMarks.end) {
+        pickerMarks[edge === 'start' ? 'end' : 'start'] = null;
+    }
+    showRangeMarks();
+}
+
+function previewRange() {
+    const player = document.getElementById('rangePickerVideo');
+    const first = pickerMarks.start || 0;
+    const last = pickerMarks.end === null ? (TL.duration || first + 3600) : pickerMarks.end;
+    player.src = `/api/video/${VIDEO_ID}#t=${first.toFixed(2)},${last.toFixed(2)}`;
+    player.play().catch(() => {});
+}
+
+function applyRangeMarks() {
+    setRange(pickerMarks.start || 0, pickerMarks.end === null ? TL.duration : pickerMarks.end, pickerMarks.end === null);
+    tlShow(pickerMarks.start || 0, pickerMarks.end === null ? TL.duration : pickerMarks.end);
+    closeRangePicker();
+}
+
+function closeRangePicker() {
+    document.getElementById('rangePickerModal').classList.add('hidden');
+    const player = document.getElementById('rangePickerVideo');
+    player.pause();
+    player.removeAttribute('src');   // lets go of the video
+    player.load();
+}
+
+document.getElementById('rangePickerVideo').addEventListener('error', () => {
+    if (document.getElementById('rangePickerModal').classList.contains('hidden')) return;
+    showError('rangePickerError', '浏览器播放不了这个视频，请用时间轴、进球卡片或手填来选时间');
+});
+
+document.addEventListener('keydown', event => {
+    if (document.getElementById('rangePickerModal').classList.contains('hidden')) return;
+    if (event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+    if (event.key === 'i' || event.key === 'I') markRangeEdge('start');
+    if (event.key === 'o' || event.key === 'O') markRangeEdge('end');
+});
+
+// ── How the highlights are exported ───────────────────────────────────────────
+const KEYFRAME_GAP = {{ keyframe_gap | tojson }};   // seconds between the seek points of the video, or null
+
+function showExportHint() {
+    const mode = document.querySelector('input[name="exportMode"]:checked').value;
+    const hint = document.getElementById('exportModeHint');
+    if (mode === 'precise') {
+        hint.textContent = '片段起止精确，前后微调照常有效。重新编码，画质接近原片，文件会变大；有硬件编码器时用它（Windows 的 NVIDIA 显卡、Mac 的芯片）。';
+    } else {
+        hint.textContent = '画面和声音与原视频完全一样，几秒完成。片段的起点会对齐到关键帧，可能提前'
+            + (KEYFRAME_GAP ? `最多约 ${Math.ceil(KEYFRAME_GAP)} 秒` : '一些')
+            + '；起点的前后微调只在跨过关键帧时才生效。';
+    }
+}
+
+for (const radio of document.querySelectorAll('input[name="exportMode"]')) {
+    radio.addEventListener('change', showExportHint);
+}
+
+function exportMode() {
+    return document.querySelector('input[name="exportMode"]:checked').value;
+}
+
+async function startRangeDetection() {
+    const startText = document.getElementById('rangeStart').value.trim();
+    const endText = document.getElementById('rangeEnd').value.trim();
+    const range = readRange();
+    if (range === null) {
+        const unreadable = startText !== '' && parseTime(startText) === null;
+        return showError('rangeError', unreadable
+            ? '开始时间看不懂，请按 1:23:45、23:45 或秒数填写，或用时间轴选择'
+            : '结束时间看不懂，请按 1:23:45、23:45 或秒数填写，或用时间轴选择');
+    }
+    if (!range.toEnd && range.last <= range.first) return showError('rangeError', '结束时间需要晚于开始时间');
+    if (!startText && !endText && !confirm('没有选时间段，会把整段视频重新检测一遍，可能要很久。确定开始吗？')) return;
     if (!nextHoop) {
         showError('rangeError', '请先框选篮筐区域');
         openHoopPicker();
@@ -613,6 +1131,13 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('rangeDuration').textContent = `视频总长 ${formatTime(RANGE.duration)}`;
     }
     showHoopChoice();
+    // The range starts as the one detected last time: the next part usually comes right after it
+    if (RANGE.last_start !== null) {
+        setRange(RANGE.last_start, RANGE.last_end === null ? TL.duration : RANGE.last_end, RANGE.last_end === null);
+    } else {
+        renderTimeline();
+    }
+    showExportHint();
     if (JOB) {
         document.body.classList.add('review-busy');
         document.getElementById('rangeCard').classList.add('range-running');
@@ -810,7 +1335,8 @@ async function generateHighlights() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
-                video_id: VIDEO_ID
+                video_id: VIDEO_ID,
+                mode: exportMode()
             })
         });
         
