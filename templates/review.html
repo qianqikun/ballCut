@@ -66,9 +66,10 @@
             <div class="tl-selection hidden" id="tlSelection">
                 <span class="tl-handle" data-edge="start" title="拖动改变开始时间"></span>
                 <span class="tl-handle" data-edge="end" title="拖动改变结束时间"></span>
-                <span class="tl-label tl-label-start"></span>
-                <span class="tl-label tl-label-end"></span>
             </div>
+            <!-- Above the bar, on solid ground: inside it the marks of the makes would run through them -->
+            <span class="tl-label tl-label-start hidden"></span>
+            <span class="tl-label tl-label-end hidden"></span>
         </div>
     </div>
 
@@ -742,21 +743,41 @@ function renderTimeline() {
     window_.style.left = TL.from / TL.duration * 100 + '%';
     window_.style.width = (TL.to - TL.from) / TL.duration * 100 + '%';
 
-    // The range, with its times at the two ends
+    // The range, with its times in labels above the bar
     const selection = document.getElementById('tlSelection');
+    const startLabel = detail.querySelector('.tl-label-start');
+    const endLabel = detail.querySelector('.tl-label-end');
     const hasRange = range !== null && range.last > range.first;
     selection.classList.toggle('hidden', !hasRange);
+    startLabel.classList.toggle('hidden', !hasRange);
+    endLabel.classList.add('hidden');
     if (hasRange) {
         const span = TL.to - TL.from;
-        selection.style.left = (Math.max(range.first, TL.from) - TL.from) / span * 100 + '%';
-        selection.style.width = (Math.min(range.last, TL.to) - Math.max(range.first, TL.from)) / span * 100 + '%';
+        const width = detail.clientWidth;
+        // Where a time lies on the bar, in pixels from its left; a range reaching past the window is held at its edge
+        const at = seconds => (Math.min(Math.max(seconds, TL.from), TL.to) - TL.from) / span * width;
+        const first = at(range.first), last = at(range.last);
+        selection.style.left = first / width * 100 + '%';
+        selection.style.width = (last - first) / width * 100 + '%';
+        // A label centred above its place, kept within the bar
+        const place = (label, centre) => {
+            label.style.left = Math.max(0, Math.min(width - label.offsetWidth, centre - label.offsetWidth / 2)) + 'px';
+        };
         const endText = range.toEnd ? '到结尾' : formatTime(range.last);
-        // Too narrow for both times side by side: one label with the whole range
-        const narrow = selection.getBoundingClientRect().width < 120;
-        selection.querySelector('.tl-label-start').textContent = narrow ? `${formatTime(range.first)} – ${endText}` : formatTime(range.first);
-        const endLabel = selection.querySelector('.tl-label-end');
+        // The time of each end, above that end. Near an edge of the bar the labels are pushed inward, and
+        // on a short range they would run into each other: then one label with the whole range instead.
+        startLabel.textContent = formatTime(range.first);
         endLabel.textContent = endText;
-        endLabel.style.display = narrow ? 'none' : '';
+        endLabel.classList.remove('hidden');
+        place(startLabel, first);
+        place(endLabel, last);
+        const sideBySide = last - first >= 110
+            && startLabel.offsetLeft + startLabel.offsetWidth <= endLabel.offsetLeft - 6;
+        if (!sideBySide) {
+            startLabel.textContent = `${formatTime(range.first)} – ${endText}`;
+            place(startLabel, (first + last) / 2);
+            endLabel.classList.add('hidden');
+        }
     }
 
     // "第 n / N 段": where the range begins among the fixed-length parts of the video
@@ -776,13 +797,20 @@ function tlSetWindow(from, to) {
     renderTimeline();
 }
 
-// Makes sure the range is on the lower bar: moved there, or the bar zoomed out to hold it
+// Makes sure the range can be seen and handled on the lower bar
 function tlShow(first, last) {
     const span = TL.to - TL.from;
-    if (last - first > span * 0.9) {
-        const margin = Math.max((last - first) * 0.1, TL.duration * 0.01);
+    const length = last - first;
+    if (length > span * 0.9) {
+        // It does not fit: the bar zooms out to hold it, with a little room around it
+        const margin = Math.max(length * 0.1, TL.duration * 0.01);
+        tlSetWindow(first - margin, last + margin);
+    } else if (length < span * 0.15 && length < TL.duration * 0.9) {
+        // It is a sliver on the bar (a few seconds on a bar with the whole video): zoom in on it
+        const margin = Math.max(length, TL.minSpan);
         tlSetWindow(first - margin, last + margin);
     } else if (first < TL.from || last > TL.to) {
+        // Out of view: the bar moves to it
         tlSetWindow((first + last) / 2 - span / 2, (first + last) / 2 + span / 2);
     }
 }

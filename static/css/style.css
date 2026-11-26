@@ -1167,6 +1167,7 @@ body {
 
 .tl-detail {
     height: 52px;
+    margin-top: 34px;   /* room for the labels above it */
     cursor: crosshair;
 }
 
@@ -1200,52 +1201,73 @@ body {
     cursor: grab;
 }
 
+/* The selected range. It has to stand out among the green marks and the shaded parts, so it is
+   filled solidly, outlined brightly and made to glow. Layered above the marks and the shading. */
 .tl-selection {
     position: absolute;
     top: 0;
     bottom: 0;
-    min-width: 4px;
-    background: rgba(59, 130, 246, 0.3);
-    border-left: 2px solid var(--accent);
-    border-right: 2px solid var(--accent);
+    min-width: 6px;
+    z-index: 2;
+    background: rgba(59, 130, 246, 0.55);
+    border: 3px solid #c7dbff;
+    border-radius: 5px;
+    box-shadow: 0 0 14px rgba(96, 165, 250, 0.75), 0 0 0 1px rgba(3, 9, 20, 0.6);
     cursor: grab;
+}
+
+.tl-selection:active {
+    cursor: grabbing;
+}
+
+.tl-covered { z-index: 0; }
+.tl-tick { z-index: 1; }
+
+/* On the bar with the whole video the marks are many: thinner, so that they do not merge */
+.tl-overview .tl-tick {
+    width: 1px;
+    margin-left: 0;
+    opacity: 0.8;
 }
 
 /* An end of the range: a strip to hold on to. It must not cover the range, which is dragged as a whole
    from anywhere else on it */
 .tl-handle {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 14px;
+    top: -3px;
+    bottom: -3px;
+    z-index: 3;
+    width: 16px;
+    border-radius: 5px;
     cursor: ew-resize;
     touch-action: none;
 }
 
-.tl-handle[data-edge="start"] { left: -7px; }
-.tl-handle[data-edge="end"] { right: -7px; }
+.tl-handle[data-edge="start"] { left: -8px; }
+.tl-handle[data-edge="end"] { right: -8px; }
 
 .tl-handle:hover {
-    background: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.4);
 }
 
-/* The times at the two ends of the range; they only show, they are not handled */
+/* The times of the range, on solid ground above the bar: inside the bar the marks of the makes ran
+   through them. They only show, they are not handled */
 .tl-label {
     position: absolute;
-    top: 4px;
-    padding: 1px 6px;
-    border-radius: 4px;
+    top: -30px;
+    z-index: 4;
+    padding: 2px 9px;
+    border-radius: 6px;
     background: var(--accent);
     color: #fff;
-    font-size: 0.72rem;
+    font-size: 0.75rem;
     font-weight: 600;
+    line-height: 1.5;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
+    box-shadow: 0 0 0 2px var(--bg-card);
     pointer-events: none;
 }
-
-.tl-label-start { left: 7px; }
-.tl-label-end { right: 7px; }
 
 .tl-toolbar {
     display: flex;
