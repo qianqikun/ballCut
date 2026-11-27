@@ -279,18 +279,9 @@
 
 <!-- Actions -->
 <section class="card actions-card">
-    <div class="export-mode" id="exportMode">
-        <span class="hint-text">导出方式</span>
-        <label class="export-option" title="画面和声音与原视频完全一样，几秒完成">
-            <input type="radio" name="exportMode" value="lossless" {{ 'checked' if export_mode == 'lossless' }}>
-            无损直切
-        </label>
-        <label class="export-option" title="片段起止精确。重新编码，画质接近原片，文件更大；有显卡时用显卡编码">
-            <input type="radio" name="exportMode" value="precise" {{ 'checked' if export_mode == 'precise' }}>
-            精确切点
-        </label>
-    </div>
-    <p class="hint-text export-hint" id="exportModeHint"></p>
+    <p class="hint-text export-hint" title="片段起止与设定一致。画面重新编码，所以片段多的时候要等一会儿">
+        导出为通用 MP4（H.264 + AAC），各种手机、电脑、微信里都能直接流畅播放
+    </p>
     <div class="actions-row">
         <div class="action-info">
             <span id="confirmedCount">{{ session.scores|selectattr('confirmed')|list|length }}</span>
@@ -491,33 +482,6 @@
     color: var(--accent);
     font-weight: 600;
     min-width: 3.5em;
-}
-
-.export-mode {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem 1.25rem;
-    margin-bottom: 0.5rem;
-}
-
-.export-option {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    cursor: pointer;
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-}
-
-.export-option input {
-    accent-color: var(--accent);
-}
-
-.export-option:has(input:checked) {
-    color: var(--text-primary);
-    font-weight: 600;
 }
 
 .export-hint {
@@ -1498,29 +1462,6 @@ document.addEventListener('keydown', event => {
     if (event.key === 'o' || event.key === 'O') markRangeEdge('end');
 });
 
-// ── How the highlights are exported ───────────────────────────────────────────
-const KEYFRAME_GAP = {{ keyframe_gap | tojson }};   // seconds between the seek points of the video, or null
-
-function showExportHint() {
-    const mode = document.querySelector('input[name="exportMode"]:checked').value;
-    const hint = document.getElementById('exportModeHint');
-    if (mode === 'precise') {
-        hint.textContent = '片段起止精确，前后微调照常有效。重新编码，画质接近原片，文件会变大；有硬件编码器时用它（Windows 的 NVIDIA 显卡、Mac 的芯片）。';
-    } else {
-        hint.textContent = '画面和声音与原视频完全一样，几秒完成。片段的起点会对齐到关键帧，可能提前'
-            + (KEYFRAME_GAP ? `最多约 ${Math.ceil(KEYFRAME_GAP)} 秒` : '一些')
-            + '；起点的前后微调只在跨过关键帧时才生效。';
-    }
-}
-
-for (const radio of document.querySelectorAll('input[name="exportMode"]')) {
-    radio.addEventListener('change', showExportHint);
-}
-
-function exportMode() {
-    return document.querySelector('input[name="exportMode"]:checked').value;
-}
-
 async function startRangeDetection() {
     const startText = document.getElementById('rangeStart').value.trim();
     const endText = document.getElementById('rangeEnd').value.trim();
@@ -1617,7 +1558,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
         renderTimeline();
     }
-    showExportHint();
     if (JOB) {
         document.body.classList.add('review-busy');
         document.getElementById('rangeCard').classList.add('range-running');
@@ -2223,10 +2163,7 @@ async function generateHighlights() {
         const response = await fetch('/api/generate', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                video_id: VIDEO_ID,
-                mode: exportMode()
-            })
+            body: JSON.stringify({video_id: VIDEO_ID})
         });
         
         const data = await response.json();

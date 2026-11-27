@@ -11,12 +11,13 @@
 {% set info = session.export_info %}
 <section class="card export-info">
     <h2>本次导出</h2>
-    {% if info.mode == 'precise' %}
-    <p>精确切点：片段起止与设定一致。重新编码，用的是{{ info.encoder }}，画质接近原片。</p>
+    {% if info.mode %}
+    {# Made before the export became one format: that file is still what it was #}
+    <p class="hint-text">这份集锦是旧版本导出的（{{ '无损直切' if info.mode == 'lossless' else '沿用了原视频的编码格式' }}）。重新生成一次，就是各种手机都能流畅播放的通用 MP4。</p>
     {% else %}
-    <p>无损直切：画面和声音与原视频完全一样，没有重新编码。</p>
-    {% if info.start_shift %}
-    <p class="hint-text">片段的起点对齐在关键帧上，这次最多比设定的时间提前 {{ info.start_shift }} 秒；结尾比设定多出几帧。</p>
+    <p>通用 MP4（H.264 + AAC），各种手机、电脑、微信里都能直接流畅播放；片段起止与设定一致，拼接处画面和声音是连续的。用的是{{ info.encoder }}。</p>
+    {% if info.colour == 'basic' %}
+    <p class="hint-text">这台电脑的 FFmpeg 缺少精确的色彩转换组件（zimg）：HDR 视频转换后颜色比原片略淡，转换也慢一些。换一个带 zimg 的 FFmpeg 可以改善。</p>
     {% endif %}
     {% endif %}
 </section>
@@ -31,7 +32,9 @@
         {# Highlights made before assists existed have no counts of their own #}
         {% set goals = info.goals if info.goals is defined else info.count %}
         <div class="highlight-stats">
+            {% if goals %}
             <span class="stat-badge">{{ goals }} 个进球</span>
+            {% endif %}
             {% if info.assists %}
             <span class="stat-badge">{{ info.assists }} 次助攻</span>
             {% endif %}
