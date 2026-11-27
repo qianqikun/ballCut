@@ -231,14 +231,17 @@ def _encoding_candidates(info):
     nv_cpu = ['-hwaccel', 'cuda']
     vt_gpu = ['-hwaccel', 'videotoolbox', '-hwaccel_output_format', 'videotoolbox']
     vt_cpu = ['-hwaccel', 'videotoolbox']
-    high = ['-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', '19', '-b:v', '0',
+    # The quality the clips are encoded at; the numbers of the three encoders are not on one scale.
+    # Measured on four clips of a 1080p60 phone video, against a lossless copy of the converted
+    # pictures (VMAF): NVENC at cq 19, what this was until 2026-11-27, gave 25 Mbps at 97.7, more
+    # than the picture visibly gains by; cq 26 gives 10 Mbps at 96.3, cq 29 6.5 Mbps at 95.0. x264 at
+    # crf 17 matches cq 26 (8.6 Mbps at 96.1). VideoToolbox at 70 gave 16 Mbps at SSIM 0.988
+    quality = '26'
+    high = ['-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', quality, '-b:v', '0',
             '-spatial-aq', '1', '-temporal-aq', '1', '-rc-lookahead', '30', '-profile:v', 'high']
-    old = ['-preset', 'slow', '-rc', 'vbr_hq', '-cq', '19', '-b:v', '0', '-profile:v', 'high']   # before ffmpeg 4.4
-    # The quality knob of VideoToolbox is not a bitrate. Measured on the user's video against a
-    # lossless copy of the converted pictures: 70 gives 16 Mbps at SSIM 0.988; x264 at crf 18 gives
-    # 9 Mbps at SSIM 0.990
+    old = ['-preset', 'slow', '-rc', 'vbr_hq', '-cq', quality, '-b:v', '0', '-profile:v', 'high']   # before ffmpeg 4.4
     apple = ['-c:v', 'h264_videotoolbox', '-q:v', '70', '-profile:v', 'high']
-    x264 = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-profile:v', 'high']
+    x264 = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-profile:v', 'high']
     nvenc_label, vt_label = '显卡编码（NVENC）', '硬件编码（VideoToolbox）'
     candidates = []
     for filters in _picture_filters(info):
